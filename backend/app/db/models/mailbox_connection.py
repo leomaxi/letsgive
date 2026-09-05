@@ -41,7 +41,7 @@ class MailboxConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "mailbox_connections"
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
     provider: Mapped[MailboxProviderName] = mapped_column(
         SAEnum(

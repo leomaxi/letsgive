@@ -50,13 +50,17 @@ backend/
 cd backend
 python -m venv ../.venv   # or reuse an existing venv
 ../.venv/Scripts/pip install -r requirements-dev.txt
-cp .env.example .env      # then set LETSGIVE_DATABASE_URL to your Postgres instance
+cp .env.example .env      # then set LETSGIVE_DATABASE_URL to your Postgres or MySQL instance
 python -m alembic upgrade head
 python -m uvicorn app.main:app --reload
 ```
 
 Without a `.env`, the app defaults to a local SQLite file for zero-setup development; set
-`LETSGIVE_DATABASE_URL` to a `postgresql+asyncpg://` URL for anything beyond local exploration.
+`LETSGIVE_DATABASE_URL` to a `postgresql+asyncpg://` or `mysql+aiomysql://` URL for anything beyond
+local exploration. Both are real, supported backends (not just Postgres) — every model column is
+explicitly lengthed for MySQL's stricter VARCHAR rules, and every migration is dialect-aware (see
+migration `0008`'s MySQL/Postgres branches for its one genuinely dialect-specific step, adding new
+enum labels).
 
 ### Tests
 

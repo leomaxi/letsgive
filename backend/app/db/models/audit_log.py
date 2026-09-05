@@ -14,8 +14,10 @@ class AuditLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "audit_logs"
 
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), index=True)
-    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    organization_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("organizations.id"), index=True
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     target_type: Mapped[str] = mapped_column(String(100), nullable=False)
     target_id: Mapped[str | None] = mapped_column(String(64))

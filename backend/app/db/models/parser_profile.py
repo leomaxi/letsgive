@@ -32,7 +32,7 @@ class ParserProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "parser_profiles"
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     template_version: Mapped[str] = mapped_column(String(50), nullable=False, default="v1")

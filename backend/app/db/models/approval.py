@@ -23,9 +23,13 @@ class Approval(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "approvals"
 
-    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False, index=True)
-    requested_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
-    approver_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("sessions.id"), nullable=False, index=True
+    )
+    requested_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    approver_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
 
     code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)

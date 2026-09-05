@@ -3,6 +3,7 @@ uvicorn[standard]>=0.30
 sqlalchemy[asyncio]>=2.0,<3.0
 alembic>=1.13
 asyncpg>=0.29
+aiomysql>=0.2
 pydantic>=2.7
 pydantic-settings>=2.3
 email-validator>=2.1

@@ -41,10 +41,14 @@ class Session(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "sessions"
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
-    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
-    mailbox_connection_id: Mapped[str | None] = mapped_column(ForeignKey("mailbox_connections.id"))
+    created_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    mailbox_connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("mailbox_connections.id")
+    )
 
     status: Mapped[SessionStatus] = mapped_column(
         SAEnum(SessionStatus, name="session_status", values_callable=lambda e: [m.value for m in e]),
@@ -53,7 +57,9 @@ class Session(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
-    display_template_id: Mapped[str | None] = mapped_column(ForeignKey("display_templates.id"))
+    display_template_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("display_templates.id")
+    )
     contribution_method: Mapped[str] = mapped_column(String(50), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
 

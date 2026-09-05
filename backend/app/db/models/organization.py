@@ -28,7 +28,7 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     nonprofit_type: Mapped[str | None] = mapped_column(String(100))
-    plan_id: Mapped[str | None] = mapped_column(ForeignKey("plans.id"))
+    plan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plans.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(

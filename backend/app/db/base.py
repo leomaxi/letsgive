@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -50,7 +50,12 @@ class Base(DeclarativeBase):
 
 
 class UUIDPrimaryKeyMixin:
-    id: Mapped[str] = mapped_column(primary_key=True, default=new_uuid)
+    # Explicit length (matches every Alembic migration's sa.String(36)):
+    # MySQL rejects an unlengthed VARCHAR outright at CREATE TABLE time
+    # (Postgres and SQLite both tolerate it), so this also has to be a real
+    # column type here, not just in the migration files, for
+    # Base.metadata.create_all() (used by the test suite) to work on MySQL.
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
 
 
 class TimestampMixin:

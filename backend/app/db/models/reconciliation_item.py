@@ -49,11 +49,13 @@ class ReconciliationItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "reconciliation_items"
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
-    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("sessions.id"), nullable=False, index=True
+    )
     contribution_event_id: Mapped[str] = mapped_column(
-        ForeignKey("contribution_events.id"), nullable=False
+        String(36), ForeignKey("contribution_events.id"), nullable=False
     )
 
     reason: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -74,7 +76,7 @@ class ReconciliationItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             values_callable=lambda e: [m.value for m in e],
         ),
     )
-    resolver_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    resolver_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
     resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     resolution_note: Mapped[str | None] = mapped_column(String(500))
     corrected_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))

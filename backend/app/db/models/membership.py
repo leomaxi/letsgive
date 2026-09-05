@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin
@@ -35,8 +35,10 @@ class Membership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "memberships"
     __table_args__ = (UniqueConstraint("user_id", "organization_id", name="uq_membership_user_org"),)
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
-    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False
+    )
     role: Mapped[Role] = mapped_column(
         SAEnum(
             Role,

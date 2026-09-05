@@ -46,12 +46,16 @@ class ContributionEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
-    session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("sessions.id"), index=True
+    )
     # Nullable: synthetic test-mode deposits (simulate-deposit) aren't tied to
     # a real mailbox at all. Real ingested events always set this.
-    mailbox_connection_id: Mapped[str | None] = mapped_column(ForeignKey("mailbox_connections.id"))
+    mailbox_connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("mailbox_connections.id")
+    )
 
     provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -61,7 +65,9 @@ class ContributionEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # original (still-untouched) event it supersedes for counting purposes
     # (an ACCEPTED correction with a corrected amount) or reverses (a
     # REVERSED correction, pointing back at the ACCEPTED event it un-does).
-    corrects_event_id: Mapped[str | None] = mapped_column(ForeignKey("contribution_events.id"))
+    corrects_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("contribution_events.id")
+    )
 
     decision: Mapped[ContributionDecision] = mapped_column(
         SAEnum(

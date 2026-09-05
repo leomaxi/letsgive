@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,7 +24,7 @@ class DisplayElement(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "display_elements"
 
     template_id: Mapped[str] = mapped_column(
-        ForeignKey("display_templates.id"), nullable=False, index=True
+        String(36), ForeignKey("display_templates.id"), nullable=False, index=True
     )
     type: Mapped[ElementType] = mapped_column(
         SAEnum(

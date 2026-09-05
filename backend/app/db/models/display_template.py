@@ -23,9 +23,11 @@ class DisplayTemplate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "display_templates"
 
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id"), nullable=False, index=True
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
     )
-    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
 
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     canvas: Mapped[dict[str, Any]] = mapped_column(
