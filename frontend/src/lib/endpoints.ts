@@ -5,6 +5,7 @@ import type {
   DisplayTemplate,
   DisplayTokenResponse,
   ElementType,
+  ImapCheckNowResult,
   Invitation,
   MailboxConnection,
   MfaEnrollResponse,
@@ -52,7 +53,7 @@ export const orgApi = {
     country: string;
     timezone: string;
     currency: string;
-    nonprofit_type?: string;
+    nonprofit_type?: string[];
   }) => api.post<Organization>("/v1/organizations", payload),
 
   get: (orgId: string) => api.get<Organization>(`/v1/organizations/${orgId}`),
@@ -162,11 +163,23 @@ export const sessionApi = {
 export const connectionApi = {
   listForOrg: (orgId: string) => api.get<MailboxConnection[]>(`/v1/organizations/${orgId}/connections`),
 
-  create: (orgId: string, provider: string, mailbox: string, folder?: string) =>
-    api.post<MailboxConnection>(`/v1/organizations/${orgId}/connections`, { provider, mailbox, folder }),
+  create: (
+    orgId: string,
+    payload: {
+      provider: string;
+      mailbox: string;
+      folder?: string;
+      imap_password?: string;
+      imap_host?: string;
+      imap_port?: number;
+    },
+  ) => api.post<MailboxConnection>(`/v1/organizations/${orgId}/connections`, payload),
 
   revoke: (orgId: string, connectionId: string) =>
     api.post<MailboxConnection>(`/v1/organizations/${orgId}/connections/${connectionId}/revoke`),
+
+  checkNow: (orgId: string, connectionId: string) =>
+    api.post<ImapCheckNowResult>(`/v1/organizations/${orgId}/connections/${connectionId}/check-now`),
 };
 
 export interface CreateParserProfilePayload {

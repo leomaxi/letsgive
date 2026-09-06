@@ -26,7 +26,7 @@ export interface Organization {
   country: string;
   timezone: string;
   currency: string;
-  nonprofit_type: string | null;
+  nonprofit_type: string[] | null;
   status: string;
   plan_id: string | null;
   subscription_status: SubscriptionStatus;
@@ -146,7 +146,7 @@ export interface OperatorSocketTokenResponse {
   expires_in_minutes: number;
 }
 
-export type MailboxProvider = "fake" | "microsoft" | "gmail";
+export type MailboxProvider = "fake" | "microsoft" | "gmail" | "imap";
 export type ConnectionStatus = "pending" | "connected" | "error" | "revoked";
 
 export interface MailboxConnection {
@@ -158,6 +158,14 @@ export interface MailboxConnection {
   status: ConnectionStatus;
   last_sync_at: string | null;
   webhook_health: string | null;
+  imap_host: string | null;
+  imap_port: number | null;
+}
+
+export interface ImapCheckNowResult {
+  fetched: number;
+  accepted: number;
+  error: string | null;
 }
 
 export interface ParserProfile {

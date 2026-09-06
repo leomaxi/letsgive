@@ -119,10 +119,36 @@ class _NotYetImplementedProvider(BaseSignedProvider):
         raise NotImplementedError(f"{self.name.value} message fetch is not wired up yet.")
 
 
+class _ImapNotAWebhookProvider(BaseSignedProvider):
+    """IMAP connections are pull-based (see app/domain/imap_polling.py) and
+    are created directly in app/api/v1/connections.py rather than through
+    begin_authorization() -- this entry exists only so a stray call to
+    get_provider(IMAP) (e.g. POST /v1/providers/imap/webhook, which makes no
+    sense for a provider with no webhook) fails with a clear message instead
+    of a raw KeyError.
+    """
+
+    name: MailboxProviderName = MailboxProviderName.IMAP
+
+    async def begin_authorization(
+        self, *, organization_id: str, mailbox: str, folder: str | None
+    ) -> AuthorizationStart:
+        raise NotImplementedError(
+            "IMAP connections are created via POST .../connections with imap_password set, "
+            "not through this OAuth-style authorization flow."
+        )
+
+    async def fetch_message(
+        self, *, connection: MailboxConnection, provider_message_id: str
+    ) -> RawMessage | None:
+        raise NotImplementedError("IMAP messages are polled, not fetched by id -- see imap_polling.py.")
+
+
 _PROVIDERS: dict[MailboxProviderName, MailboxProvider] = {
     MailboxProviderName.FAKE: FakeMailboxProvider(),
     MailboxProviderName.MICROSOFT: _NotYetImplementedProvider(MailboxProviderName.MICROSOFT),
     MailboxProviderName.GMAIL: _NotYetImplementedProvider(MailboxProviderName.GMAIL),
+    MailboxProviderName.IMAP: _ImapNotAWebhookProvider(),
 }
 
 

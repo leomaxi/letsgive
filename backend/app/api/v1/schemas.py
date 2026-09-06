@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.db.models.contribution_event import ContributionDecision
 from app.db.models.display_template import ElementType
@@ -54,7 +54,7 @@ class OrganizationCreateRequest(BaseModel):
     country: str = Field(min_length=2, max_length=2)
     timezone: str
     currency: str = Field(min_length=3, max_length=3)
-    nonprofit_type: str | None = None
+    nonprofit_type: list[str] | None = None
 
 
 class OrganizationOut(BaseModel):
@@ -64,13 +64,24 @@ class OrganizationOut(BaseModel):
     country: str
     timezone: str
     currency: str
-    nonprofit_type: str | None
+    nonprofit_type: list[str] | None
     status: str
     plan_id: str | None
     subscription_status: SubscriptionStatus
     grace_period_ends_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("nonprofit_type", mode="before")
+    @classmethod
+    def _split_nonprofit_type(cls, value: object) -> list[str] | None:
+        # The ORM stores this comma-joined (see Organization.nonprofit_type);
+        # a list value (e.g. round-tripping an already-validated model) is
+        # passed through unchanged.
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",") if part.strip()]
+            return parts or None
+        return value  # type: ignore[return-value]
 
 
 class MyOrganizationOut(OrganizationOut):
@@ -224,6 +235,12 @@ class MailboxConnectionCreateRequest(BaseModel):
     provider: MailboxProviderName
     mailbox: EmailStr
     folder: str | None = None
+    # IMAP ("log in with your email") only. imap_host/imap_port can be
+    # omitted for well-known providers (Gmail/Outlook/Yahoo/iCloud) -- see
+    # app/domain/imap_provider.py's guess_imap_host.
+    imap_password: str | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
 
 
 class MailboxConnectionOut(BaseModel):
@@ -235,8 +252,16 @@ class MailboxConnectionOut(BaseModel):
     status: ConnectionStatus
     last_sync_at: datetime | None
     webhook_health: str | None
+    imap_host: str | None
+    imap_port: int | None
 
     model_config = {"from_attributes": True}
+
+
+class ImapCheckNowResponse(BaseModel):
+    fetched: int
+    accepted: int
+    error: str | None
 
 
 class ParserProfileCreateRequest(BaseModel):

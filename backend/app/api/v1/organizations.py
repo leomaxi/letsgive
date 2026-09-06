@@ -60,7 +60,7 @@ async def create_organization(
         country=payload.country.upper(),
         timezone=payload.timezone,
         currency=payload.currency.upper(),
-        nonprofit_type=payload.nonprofit_type,
+        nonprofit_type=",".join(payload.nonprofit_type) if payload.nonprofit_type else None,
         plan_id=starter_plan.id if starter_plan else None,
         subscription_status=SubscriptionStatus.TRIALING,
     )

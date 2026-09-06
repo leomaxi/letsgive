@@ -44,7 +44,7 @@ export default function SessionDetailPage() {
   const [depositAmount, setDepositAmount] = useState("20.00");
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
 
-  const canOperate = role === "media" || role === "finance";
+  const canOperate = role === "owner" || role === "media" || role === "finance";
 
   const query = useQuery({
     queryKey: ["session", sessionId],
@@ -102,7 +102,7 @@ export default function SessionDetailPage() {
     return <Card className="text-sm text-slate-500 dark:text-slate-400">Session not found.</Card>;
   }
 
-  const canRequestApproval = role === "media";
+  const canRequestApproval = role === "owner" || role === "media";
   const canToggleVisibility = role === "finance";
 
   return (
@@ -308,7 +308,7 @@ export default function SessionDetailPage() {
               onClick={async () => {
                 const res = await runAction(() => sessionApi.displayToken(session.id));
                 if (res) {
-                  const url = `${window.location.protocol}//${window.location.hostname}:8000/display/${session.id}?token=${res.display_token}`;
+                  const url = `${window.location.protocol}//${window.location.host}/display/${session.id}?token=${res.display_token}`;
                   setDisplayUrl(url);
                 }
               }}

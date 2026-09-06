@@ -2,7 +2,7 @@ import enum
 import secrets
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,7 @@ class MailboxProviderName(str, enum.Enum):
     FAKE = "fake"
     MICROSOFT = "microsoft"
     GMAIL = "gmail"
+    IMAP = "imap"
 
 
 class ConnectionStatus(str, enum.Enum):
@@ -70,5 +71,12 @@ class MailboxConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     last_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
-    webhook_health: Mapped[str | None] = mapped_column(String(50))
+    webhook_health: Mapped[str | None] = mapped_column(String(255))
     is_dedicated_mailbox: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # IMAP ("log in with your email") connections only -- see
+    # app/domain/imap_provider.py. imap_password is the user's app-specific
+    # password, encrypted at rest the same way webhook_secret already is.
+    imap_host: Mapped[str | None] = mapped_column(String(255))
+    imap_port: Mapped[int | None] = mapped_column(Integer)
+    imap_password: Mapped[str | None] = mapped_column(EncryptedString(500))

@@ -34,7 +34,7 @@ export default function NewSessionPage() {
 
   if (!activeOrg) return null;
 
-  if (activeOrg.role !== "media" && activeOrg.role !== "finance") {
+  if (activeOrg.role !== "owner" && activeOrg.role !== "media" && activeOrg.role !== "finance") {
     return (
       <Card className="mx-auto max-w-lg text-sm text-slate-500 dark:text-slate-400">
         Only Media and Finance can create sessions.

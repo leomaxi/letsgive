@@ -295,10 +295,32 @@ python -m pytest
   constraint outside of Alembic's batch mode (see migration `0003`'s `op.batch_alter_table`) — Postgres
   wouldn't have needed it,
   but the dev DB does.
-- Real Microsoft Graph / Gmail OAuth and message-fetch calls aren't implemented (see above) — only
-  the `fake` provider works today. `token_ref` is still a placeholder column rather than a real
-  pointer into a secret store, since there's no real OAuth token to reference yet — see the envelope
-  encryption entry near the end of this section for what *is* encrypted today.
+- *(Historical note, partially resolved)* This paragraph originally said only the `fake` provider
+  worked, since real Microsoft Graph / Gmail OAuth needs a registered app and live credentials this
+  environment doesn't have. A real, working alternative now exists that needs neither: a new `imap`
+  `MailboxProviderName` (`app/domain/imap_provider.py`, `app/domain/imap_polling.py`) that logs into
+  the user's own mailbox directly with an email + an app-specific password (`imaplib`, over SSL) —
+  "log in with your email," not an OAuth redirect. `guess_imap_host` recognizes Gmail/Outlook/Office
+  365/Yahoo/iCloud by domain so most users never type a hostname; anything else asks for one via a
+  400 with a clear message rather than guessing wrong silently. `POST .../connections` for `imap`
+  does a real synchronous login test before ever creating the row, translating `imaplib.IMAP4.error`
+  into a plain-English message (mentions app passwords/IMAP access explicitly) instead of a stack
+  trace; `imap_password` is envelope-encrypted at rest the same way `webhook_secret` already is. A
+  new backend-wide asyncio background task (`app/main.py`'s lifespan, skipped under pytest) polls
+  every connected IMAP mailbox every 60s for `UNSEEN` messages, running each through the exact same
+  `ingest_message` pipeline the webhook path uses — `BODY.PEEK[]` so fetching never marks a message
+  seen on its own; `\Seen` is only set after ingestion actually succeeds, so a crash mid-poll just
+  means the message is safely re-fetched next cycle (idempotent by the same ledger constraint every
+  other provider relies on). `POST .../connections/{id}/check-now` runs one poll immediately for
+  instant feedback instead of waiting up to a minute. Real Microsoft Graph / Gmail OAuth itself is
+  still unimplemented (`token_ref` is still a placeholder for exactly that reason) — IMAP is the
+  supported path for a real deployment today. 9 new backend tests (`tests/test_imap.py`), mocking
+  `imaplib.IMAP4_SSL` the same disciplined way `tests/test_notifications.py` already mocks
+  `smtplib.SMTP`: host-guessing, login success/failure surfaced as the right HTTP error, a failed
+  login leaving no orphaned connection row, and a full poll cycle (ingest + mark-seen + idempotent
+  re-poll) against a real RFC 5322 message built with `email.message.EmailMessage`. **Verified live**
+  end-to-end in a real browser against a real running server: connected a mailbox, hit the
+  auto-detection error path for an unrecognized domain, then revealed the custom-host fields.
 - The webhook handler runs signature validation, message fetch, and parsing **inline** in the
   request/response cycle rather than acking immediately and handing off to a queue. Spec §9
   calls for Celery/Dramatiq/ARQ workers with retries and a dead-letter queue; that infra (and the
@@ -938,6 +960,37 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   sessions, mailbox, display studio, billing, audit and reconciliation-access-gate pages, plus
   toggling the switch, confirming it persists across a reload, and confirming it renders correctly on
   first load with no theme flash.
+- **Fixed a real production bug found after this app's first live deployment**
+  (`letsgive.pellutech.com`): the "Get projection link" button on the operator console
+  (`SessionDetailPage.tsx`) hardcoded `:8000` onto the generated URL, a leftover from working around
+  the dev proxy only forwarding `/v1`, not `/display`. That's harmless in dev (backend listens on
+  8000 directly) but produces a dead link in production, where nginx proxies `/display/` on the same
+  origin and port 8000 isn't exposed at all (see `DEPLOYMENT.md`). Fixed by building the URL from
+  `window.location.host` (no hardcoded port) and adding `/display` to `vite.config.ts`'s dev proxy
+  alongside `/v1`, so dev and prod now resolve the link the same way instead of dev needing a special
+  case. **Verified live**: generated a projection link as Owner and opened it in a second tab,
+  confirming the display page loads and updates live over the same origin with no port needed.
+- **Owner can now create and fully operate a session solo** (create, request-approval, verify, start/
+  pause/resume/extend/close, simulate-deposit, get a projection link) — previously exclusive to
+  Media/Finance, which silently locked out any org with only one person running the whole show. The
+  one control that stays a genuine security boundary, untouched: the finance-approval OTP itself
+  still has to be relayed by a real, distinct Finance officer (`app/api/v1/sessions.py`'s
+  `request_approval` still only notifies active Finance members) — Owner can request/verify the code,
+  but never receives it, so the separation the OTP flow exists for isn't weakened, only the
+  create/run bottleneck is. The Finance-only `amount_visible` toggle is deliberately untouched too.
+  New test `test_owner_can_create_and_run_a_session_solo` runs the entire lifecycle as Owner + a
+  separate Finance officer with **no Media user in the org at all**, and confirms the visibility
+  toggle still 403s for Owner at the end.
+- **Nonprofit type is now a real multi-select, and time zone a real dropdown**, on `CreateOrgPage`
+  (previously both free-text inputs). Time zone uses `Intl.supportedValuesOf("timeZone")` where the
+  browser supports it (defaulting to the browser's own detected zone) with a curated ~50-zone static
+  fallback otherwise; nonprofit type is a native `<select multiple>` over ten illustrative categories
+  plus "Other" (free-text). Storage stays a single column (`nonprofit_type` widened `String(100)` ->
+  `String(500)`, migration `0009`) — the API now accepts/returns a real `list[str]`, comma-joined on
+  write and split on read via a Pydantic `field_validator`, so nothing above the ORM boundary deals
+  with the joined string. **Verified live**: created an org selecting two nonprofit types via
+  ctrl-click and confirmed `nonprofit_type = "Congregation,Foundation"` round-tripped correctly by
+  reading the row directly out of the database.
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.

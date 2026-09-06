@@ -27,7 +27,11 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     country: Mapped[str] = mapped_column(String(2), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
-    nonprofit_type: Mapped[str | None] = mapped_column(String(100))
+    # Comma-joined list of selected nonprofit types (the API accepts/returns
+    # a real list[str] -- see OrganizationOut/OrganizationCreateRequest in
+    # app/api/v1/schemas.py -- this column just stores the joined form,
+    # since a nonprofit's type tags are never individually filtered/queried).
+    nonprofit_type: Mapped[str | None] = mapped_column(String(500))
     plan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plans.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 

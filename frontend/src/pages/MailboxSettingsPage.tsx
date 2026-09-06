@@ -4,7 +4,7 @@ import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { connectionApi, parserProfileApi } from "@/lib/endpoints";
 import type { ConnectionStatus } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Field, Input, Label, Spinner } from "@/components/ui";
+import { Badge, Button, Card, ErrorText, Field, Input, Spinner } from "@/components/ui";
 
 const CONNECTION_STATUS_TONE: Record<ConnectionStatus, "slate" | "green" | "red" | "amber"> = {
   pending: "amber",
@@ -13,11 +13,44 @@ const CONNECTION_STATUS_TONE: Record<ConnectionStatus, "slate" | "green" | "red"
   revoked: "slate",
 };
 
+function CheckNowButton({ connectionId }: { connectionId: string }) {
+  const { activeOrg } = useOrg();
+  const queryClient = useQueryClient();
+  const [result, setResult] = useState<string | null>(null);
+
+  const checkMutation = useMutation({
+    mutationFn: () => connectionApi.checkNow(activeOrg!.id, connectionId),
+    onSuccess: (res) => {
+      setResult(
+        res.error
+          ? `Error: ${res.error}`
+          : `Checked: ${res.fetched} new message${res.fetched === 1 ? "" : "s"}, ${res.accepted} counted`,
+      );
+      queryClient.invalidateQueries({ queryKey: ["connections", activeOrg?.id] });
+    },
+    onError: (err) => setResult(err instanceof ApiError ? err.message : "Could not check the mailbox."),
+  });
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button variant="secondary" disabled={checkMutation.isPending} onClick={() => checkMutation.mutate()}>
+        {checkMutation.isPending ? "Checking…" : "Check now"}
+      </Button>
+      {result && <span className="text-xs text-slate-500 dark:text-slate-400">{result}</span>}
+    </div>
+  );
+}
+
 function ConnectionsSection() {
   const { activeOrg } = useOrg();
   const queryClient = useQueryClient();
 
+  const [providerKind, setProviderKind] = useState<"imap" | "fake">("imap");
   const [mailbox, setMailbox] = useState("");
+  const [imapPassword, setImapPassword] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const connectionsQuery = useQuery({
@@ -27,13 +60,28 @@ function ConnectionsSection() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => connectionApi.create(activeOrg!.id, "fake", mailbox),
+    mutationFn: () =>
+      connectionApi.create(activeOrg!.id, {
+        provider: providerKind,
+        mailbox,
+        ...(providerKind === "imap"
+          ? {
+              imap_password: imapPassword,
+              imap_host: imapHost || undefined,
+              imap_port: imapPort ? Number(imapPort) : undefined,
+            }
+          : {}),
+      }),
     onSuccess: () => {
       setMailbox("");
+      setImapPassword("");
+      setImapHost("");
+      setImapPort("");
+      setShowAdvanced(false);
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["connections", activeOrg?.id] });
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : "Could not add the mailbox."),
+    onError: (err) => setError(err instanceof ApiError ? err.message : "Could not connect that mailbox."),
   });
 
   const revokeMutation = useMutation({
@@ -66,11 +114,17 @@ function ConnectionsSection() {
                 <div className="text-slate-700 dark:text-slate-300">{c.mailbox}</div>
                 <div className="text-xs text-slate-400 dark:text-slate-500">
                   {c.provider}
-                  {c.last_sync_at && ` · last synced ${new Date(c.last_sync_at).toLocaleString()}`}
+                  {c.last_sync_at && ` · last checked ${new Date(c.last_sync_at).toLocaleString()}`}
+                  {c.webhook_health && c.webhook_health !== "ok" && (
+                    <span className="text-amber-600 dark:text-amber-400"> · {c.webhook_health}</span>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <Badge tone={CONNECTION_STATUS_TONE[c.status]}>{c.status}</Badge>
+                {c.status === "connected" && c.provider === "imap" && (
+                  <CheckNowButton connectionId={c.id} />
+                )}
                 {c.status !== "revoked" && (
                   <Button
                     variant="secondary"
@@ -88,9 +142,31 @@ function ConnectionsSection() {
         <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No mailbox connections yet.</p>
       )}
 
-      <form onSubmit={onSubmit} className="flex items-end gap-2" noValidate>
-        <div className="flex-1">
-          <Label htmlFor="mailbox">Add a dedicated mailbox</Label>
+      <form onSubmit={onSubmit} className="space-y-3" noValidate>
+        <div className="flex gap-4 text-sm">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="providerKind"
+              checked={providerKind === "imap"}
+              onChange={() => setProviderKind("imap")}
+              className="text-brand-600 focus:ring-brand-500"
+            />
+            Connect your email
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="providerKind"
+              checked={providerKind === "fake"}
+              onChange={() => setProviderKind("fake")}
+              className="text-brand-600 focus:ring-brand-500"
+            />
+            Test mailbox (simulated, for rehearsal)
+          </label>
+        </div>
+
+        <Field label="Email address" htmlFor="mailbox">
           <Input
             id="mailbox"
             type="email"
@@ -99,15 +175,71 @@ function ConnectionsSection() {
             value={mailbox}
             onChange={(e) => setMailbox(e.target.value)}
           />
-        </div>
+        </Field>
+
+        {providerKind === "imap" && (
+          <>
+            <Field label="App password" htmlFor="imapPassword">
+              <Input
+                id="imapPassword"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={imapPassword}
+                onChange={(e) => setImapPassword(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Works automatically with Gmail, Outlook/Office 365, Yahoo, and iCloud. With
+                two-factor authentication turned on (or to allow IMAP access for an external app
+                at all), these providers require an <strong>app-specific password</strong> instead
+                of your regular one — look for "app passwords" in your email provider's account
+                security settings and generate one to paste here. Your regular password is never
+                stored.
+              </p>
+            </Field>
+
+            {!showAdvanced ? (
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(true)}
+                className="text-xs text-brand-600 hover:text-brand-700"
+              >
+                Using a different email provider? Set a custom mail server
+              </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="IMAP server" htmlFor="imapHost">
+                  <Input
+                    id="imapHost"
+                    placeholder="imap.example.com"
+                    value={imapHost}
+                    onChange={(e) => setImapHost(e.target.value)}
+                  />
+                </Field>
+                <Field label="Port" htmlFor="imapPort">
+                  <Input
+                    id="imapPort"
+                    type="number"
+                    placeholder="993"
+                    value={imapPort}
+                    onChange={(e) => setImapPort(e.target.value)}
+                  />
+                </Field>
+              </div>
+            )}
+          </>
+        )}
+
         <Button type="submit" disabled={createMutation.isPending}>
-          {createMutation.isPending ? "Adding…" : "Add"}
+          {createMutation.isPending
+            ? providerKind === "imap"
+              ? "Connecting…"
+              : "Adding…"
+            : providerKind === "imap"
+              ? "Connect mailbox"
+              : "Add"}
         </Button>
       </form>
-      <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-        Only the "fake" dev provider is wired up in this environment — real Microsoft 365/Gmail OAuth
-        needs a registered app and live credentials this environment doesn't have (see README).
-      </p>
       <ErrorText>{error}</ErrorText>
     </Card>
   );

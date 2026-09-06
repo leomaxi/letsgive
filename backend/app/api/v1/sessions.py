@@ -133,7 +133,7 @@ async def create_session(
     membership = await load_active_membership(db, current_user.id, payload.organization_id)
     if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
 
     org = await db.get(Organization, payload.organization_id)
     if org is None:
@@ -241,7 +241,7 @@ async def request_approval(
     notifier: Notifier = Depends(get_notifier),
 ) -> RequestApprovalResponse:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA)
+    require_roles(membership, Role.OWNER, Role.MEDIA)
 
     if session.status not in (SessionStatus.DRAFT, SessionStatus.APPROVAL_REQUESTED):
         raise HTTPException(
@@ -312,7 +312,7 @@ async def verify_approval(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA)
+    require_roles(membership, Role.OWNER, Role.MEDIA)
 
     approval = await db.get(Approval, payload.approval_id)
     if approval is None or approval.session_id != session.id:
@@ -377,7 +377,7 @@ async def start_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     check_version(session, payload.expected_version)
 
     now = datetime.now(timezone.utc)
@@ -412,7 +412,7 @@ async def pause_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     check_version(session, payload.expected_version)
 
     session.paused_at = datetime.now(timezone.utc)
@@ -444,7 +444,7 @@ async def resume_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     check_version(session, payload.expected_version)
 
     if session.paused_at is not None and session.ends_at is not None:
@@ -480,7 +480,7 @@ async def extend_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     check_version(session, payload.expected_version)
 
     if session.status not in (SessionStatus.LIVE, SessionStatus.PAUSED):
@@ -556,7 +556,7 @@ async def close_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionOperatorOut:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     check_version(session, payload.expected_version)
 
     now = datetime.now(timezone.utc)
@@ -602,7 +602,7 @@ async def issue_display_token(
     session_membership: tuple[Session, Membership] = Depends(get_session_membership),
 ) -> DisplayTokenResponse:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     expire_minutes = 240
     return DisplayTokenResponse(
         display_token=create_display_token(session.id, expire_minutes=expire_minutes),
@@ -621,7 +621,7 @@ async def issue_operator_socket_token(
     REST call so the general-purpose access token never has to go in a URL.
     """
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
     expire_minutes = 60
     return OperatorSocketTokenResponse(
         operator_socket_token=create_operator_socket_token(
@@ -686,7 +686,7 @@ async def simulate_deposit(
     db: AsyncSession = Depends(get_db),
 ) -> ContributionEvent:
     session, membership = session_membership
-    require_roles(membership, Role.MEDIA, Role.FINANCE)
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
 
     if not session.test_mode:
         raise HTTPException(
@@ -836,7 +836,7 @@ async def session_live_operator(
     # age alone -- someone removed from the org after the token was minted
     # shouldn't keep a live operator feed for up to its full TTL.
     membership = await load_active_membership(db, user_id, session.organization_id)
-    if membership is None or membership.role not in (Role.MEDIA, Role.FINANCE):
+    if membership is None or membership.role not in (Role.OWNER, Role.MEDIA, Role.FINANCE):
         await websocket.close(code=4403)
         return
 

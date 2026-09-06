@@ -135,6 +135,71 @@ async def test_full_session_lifecycle(
     assert resp.json()["status"] == "ended"
 
 
+async def test_owner_can_create_and_run_a_session_solo(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    """Owner gained the same session-control rights as Media (create,
+    request-approval, verify, start, simulate-deposit, display-token, close)
+    so a one-person org isn't locked out of the product just for having no
+    separate Media user. The one control that stays a genuinely separate
+    security boundary is untouched: the OTP itself must still be relayed by
+    a real, distinct Finance officer (spec 4) -- this org has no Media user
+    at all, only Owner + Finance, and the whole lifecycle still works.
+    """
+    owner_token = await register_and_login(client, "owner-solo@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Solo Org")
+    finance_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "finance-solo@example.org", "finance", needs_mfa=True
+    )
+
+    session = await create_session(client, owner_token, org["id"], test_mode=True)
+    assert session["status"] == "draft"
+
+    authorized = await approve_session(client, notifier, owner_token, session["id"])
+    assert authorized["status"] == "authorized"
+    # The code was still sent to the real Finance officer, not the Owner --
+    # Owner can request/verify, but never receives the code itself.
+    assert notifier.sent[0]["to_email"] == "finance-solo@example.org"
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    live = resp.json()
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/simulate-deposit",
+        json={"amount": "25.00"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/display-token",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/close",
+        json={"expected_version": live["version"]},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ended"
+    # The Finance-only visibility toggle stays exactly that -- Owner is not
+    # a substitute for Finance everywhere, only for Media.
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/visibility",
+        json={"amount_visible": True, "expected_version": resp.json()["version"]},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 403
+
+
 async def test_request_approval_without_finance_officer_fails(
     client: AsyncClient, db_session: AsyncSession
 ):
@@ -289,13 +354,17 @@ async def test_non_member_cannot_view_session_operator_state(
     assert resp.status_code == 404
 
 
-async def test_owner_and_auditor_can_view_but_not_control_session_operator_state(
+async def test_owner_and_auditor_can_view_but_only_auditor_cannot_control_session_operator_state(
     client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
 ):
     """Read access to GET .../operator is any active member (Owner/Auditor
     included) -- the sessions list links every role to this page, so a
     Media/Finance-only read would 403 an Owner or Auditor just clicking
-    through. Control actions (start/pause/etc.) stay Media/Finance-only.
+    through. Control actions (start/pause/etc.) stay Auditor-excluded, but
+    Owner gained the same control rights as Media (a solo-admin org has no
+    one else to create/run a session; the actual finance-approval OTP relay
+    still requires a distinct, real Finance officer, so that separation of
+    duties is untouched).
     """
     org, owner_token, _, media_token = await _org_with_finance_and_media(client, db_session, "viewonly")
     session = await create_session(client, media_token, org["id"])
@@ -316,11 +385,17 @@ async def test_owner_and_auditor_can_view_but_not_control_session_operator_state
         )
         assert resp.status_code == 200, resp.text
 
-        resp = await client.post(
-            f"/v1/sessions/{session['id']}/request-approval",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 403
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/request-approval",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/request-approval",
+        headers={"Authorization": f"Bearer {auditor_token}"},
+    )
+    assert resp.status_code == 403
 
 
 async def test_list_org_sessions_ordered_newest_first_and_filterable(

@@ -4,12 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user, get_membership
 from app.api.v1.schemas import (
+    ImapCheckNowResponse,
     MailboxConnectionCreateRequest,
     MailboxConnectionOut,
     ParserProfileCreateRequest,
     ParserProfileOut,
 )
-from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
+from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
 from app.db.models.organization import Organization
 from app.db.models.parser_profile import (
@@ -22,6 +23,8 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_create_connection
+from app.domain.imap_polling import poll_imap_connection
+from app.domain.imap_provider import ImapAuthError, guess_imap_host, verify_imap_login
 from app.domain.mailbox_providers import get_provider
 from app.domain.rbac import require_roles
 
@@ -57,17 +60,52 @@ async def create_connection(
         folder=payload.folder,
         status=ConnectionStatus.PENDING,
     )
-    db.add(connection)
-    await db.flush()
 
-    provider = get_provider(payload.provider)
-    result = await provider.begin_authorization(
-        organization_id=organization_id, mailbox=payload.mailbox, folder=payload.folder
-    )
-    if result.status == "connected":
+    if payload.provider == MailboxProviderName.IMAP:
+        # Pull-based, not OAuth -- "log in with your email" doesn't fit the
+        # begin_authorization() redirect-style protocol the other providers
+        # use, so it's handled directly here instead of through get_provider().
+        if not payload.imap_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An app password is required to connect this mailbox.",
+            )
+        host, port = payload.imap_host, payload.imap_port
+        if not host or not port:
+            guessed = guess_imap_host(payload.mailbox)
+            if guessed is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Couldn't recognize this email provider automatically. Please provide "
+                        "its IMAP server address and port."
+                    ),
+                )
+            host, port = host or guessed[0], port or guessed[1]
+
+        try:
+            await verify_imap_login(host=host, port=port, mailbox=payload.mailbox, password=payload.imap_password)
+        except ImapAuthError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        connection.imap_host = host
+        connection.imap_port = port
+        connection.imap_password = payload.imap_password
         connection.status = ConnectionStatus.CONNECTED
-        connection.external_account_id = result.external_account_id
-        connection.token_ref = result.token_ref
+        db.add(connection)
+        await db.flush()
+    else:
+        db.add(connection)
+        await db.flush()
+
+        provider = get_provider(payload.provider)
+        result = await provider.begin_authorization(
+            organization_id=organization_id, mailbox=payload.mailbox, folder=payload.folder
+        )
+        if result.status == "connected":
+            connection.status = ConnectionStatus.CONNECTED
+            connection.external_account_id = result.external_account_id
+            connection.token_ref = result.token_ref
 
     await record_audit_event(
         db,
@@ -136,6 +174,35 @@ async def revoke_connection(
     await db.commit()
     await db.refresh(connection)
     return connection
+
+
+@router.post("/connections/{connection_id}/check-now", response_model=ImapCheckNowResponse)
+async def check_connection_now(
+    organization_id: str,
+    connection_id: str,
+    membership: Membership = Depends(get_membership),
+    db: AsyncSession = Depends(get_db),
+) -> ImapCheckNowResponse:
+    """Runs an IMAP poll immediately instead of waiting for the next
+    scheduled cycle (app/main.py's background loop, every 60s) -- so
+    connecting a mailbox and clicking "Check now" gives instant feedback
+    rather than a silent wait.
+    """
+    require_roles(membership, Role.OWNER, Role.FINANCE, Role.MEDIA)
+
+    connection = await db.get(MailboxConnection, connection_id)
+    if connection is None or connection.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
+    if connection.provider != MailboxProviderName.IMAP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only IMAP connections can be checked on demand.",
+        )
+    if connection.status != ConnectionStatus.CONNECTED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Connection is not active.")
+
+    summary = await poll_imap_connection(db, connection)
+    return ImapCheckNowResponse(fetched=summary.fetched, accepted=summary.accepted, error=summary.error)
 
 
 @router.post(

@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { orgApi } from "@/lib/endpoints";
+import { NONPROFIT_TYPES } from "@/lib/nonprofitTypes";
+import { listTimezones } from "@/lib/timezones";
 import { Button, Card, ErrorText, Field, Input, Label } from "@/components/ui";
 
 const COUNTRIES = [
@@ -15,17 +17,25 @@ const COUNTRIES = [
 
 const CURRENCIES = ["CAD", "USD", "GBP", "AUD", "EUR"];
 
+const SELECT_CLASSES =
+  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100";
+
 export default function CreateOrgPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { setActiveOrgId, refetch } = useOrg();
 
+  const timezones = useMemo(() => listTimezones(), []);
+
   const [name, setName] = useState("");
   const [legalName, setLegalName] = useState("");
   const [country, setCountry] = useState("CA");
   const [currency, setCurrency] = useState("CAD");
-  const [timezone, setTimezone] = useState("America/Toronto");
-  const [nonprofitType, setNonprofitType] = useState("");
+  const [timezone, setTimezone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto",
+  );
+  const [nonprofitTypes, setNonprofitTypes] = useState<string[]>([]);
+  const [otherNonprofitType, setOtherNonprofitType] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -34,13 +44,16 @@ export default function CreateOrgPage() {
     setError(null);
     setSubmitting(true);
     try {
+      const resolvedTypes = nonprofitTypes
+        .filter((t) => t !== "Other")
+        .concat(nonprofitTypes.includes("Other") && otherNonprofitType.trim() ? [otherNonprofitType.trim()] : []);
       const org = await orgApi.create({
         name,
         legal_name: legalName || undefined,
         country,
         currency,
         timezone,
-        nonprofit_type: nonprofitType || undefined,
+        nonprofit_type: resolvedTypes.length > 0 ? resolvedTypes : undefined,
       });
       await refetch();
       setActiveOrgId(org.id);
@@ -88,7 +101,7 @@ export default function CreateOrgPage() {
               <Label htmlFor="country">Country</Label>
               <select
                 id="country"
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                className={SELECT_CLASSES}
                 value={country}
                 onChange={(e) => setCountry(e.target.value)}
               >
@@ -103,7 +116,7 @@ export default function CreateOrgPage() {
               <Label htmlFor="currency">Currency</Label>
               <select
                 id="currency"
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                className={SELECT_CLASSES}
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value)}
               >
@@ -115,17 +128,53 @@ export default function CreateOrgPage() {
               </select>
             </div>
           </div>
-          <Field label="Time zone (IANA)" htmlFor="timezone">
-            <Input id="timezone" required value={timezone} onChange={(e) => setTimezone(e.target.value)} />
-          </Field>
-          <Field label="Nonprofit type (optional)" htmlFor="nonprofitType">
-            <Input
+          <div>
+            <Label htmlFor="timezone">Time zone</Label>
+            <select
+              id="timezone"
+              required
+              className={SELECT_CLASSES}
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+            >
+              {!timezones.includes(timezone) && <option value={timezone}>{timezone}</option>}
+              {timezones.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Label htmlFor="nonprofitType">Nonprofit type (optional, select any that apply)</Label>
+            <select
               id="nonprofitType"
-              placeholder="e.g. congregation, charity, diocese"
-              value={nonprofitType}
-              onChange={(e) => setNonprofitType(e.target.value)}
-            />
-          </Field>
+              multiple
+              size={5}
+              className={SELECT_CLASSES}
+              value={nonprofitTypes}
+              onChange={(e) =>
+                setNonprofitTypes(Array.from(e.target.selectedOptions, (o) => o.value))
+              }
+            >
+              {NONPROFIT_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Hold Ctrl (or Cmd on Mac) to select more than one.
+            </p>
+            {nonprofitTypes.includes("Other") && (
+              <Input
+                className="mt-2"
+                placeholder="Describe your nonprofit type"
+                value={otherNonprofitType}
+                onChange={(e) => setOtherNonprofitType(e.target.value)}
+              />
+            )}
+          </div>
           <ErrorText>{error}</ErrorText>
           <Button type="submit" className="w-full" disabled={submitting}>
             {submitting ? "Creating…" : "Create organization"}
