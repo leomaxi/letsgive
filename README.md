@@ -1060,6 +1060,44 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     full audit log and a read-only mailbox/parser page; a fourth, brand-new user entered the org's
     join code, showed up as a pending request with their name/email, and was approved as Media by
     the Owner, appearing in the members list immediately with zero manual DB work.
+- **Fixed a real production bug: a real $1 Interac e-Transfer deposit into the live IMAP-connected
+  mailbox never got counted.** The user reported it with the actual notification email (subject:
+  "Interac e-Transfer: You've received $1.00 ... automatically deposited", from
+  `notify@payments.interac.ca`). Two real, independent bugs, either one of which would have caused
+  this on its own:
+  - **The poller only ever searched `UNSEEN` messages** (`app/domain/imap_polling.py`) — the IMAP
+    equivalent of "has nobody read this yet," which is not the same question as "has *this app*
+    processed this." The user had opened the notification in their own phone's mail app (a
+    dedicated deposit-notification mailbox that a human also legitimately checks), marking it
+    `\Seen`, so the poller's next run found nothing at all. Replaced with a real, persisted
+    watermark: `MailboxConnection.imap_last_uid` (migration `0013`) tracks the highest IMAP UID
+    already examined, entirely independent of the mailbox's own read/unread state. A brand-new
+    connection gets its baseline set at connect time (via `IMAP STATUS ... UIDNEXT`, in
+    `app/domain/imap_provider.py`'s new `connect_and_get_baseline_uid`, replacing the old
+    `verify_imap_login`) so connecting a mailbox that's been in use for years doesn't dump its
+    whole history into the ledger; a connection made *before* this column existed has `NULL`, which
+    triggers a one-time full `SEARCH ALL` sweep on its next poll instead of skipping straight to
+    "now" — exactly what was needed to pick up the missed $1 deposit itself. `\Seen` is still set
+    after a successful ingest, but now purely as a courtesy for a human glancing at the inbox, not
+    as tracking. Handles the "N:*" IMAP range quirk (RFC 3501: some servers return the *last*
+    message, not nothing, when N exceeds every real UID) by searching inclusive of the watermark
+    and filtering back out in Python rather than trusting `N+1:*`.
+  - **`_extract_body` only ever read the `text/plain` part of an email**, silently returning `""`
+    the moment that part was missing or a bare ESP-generated stub — exactly the shape of Interac's
+    own template, which is HTML-styled (logo, colored panels) with little to no useful plain-text
+    fallback. Now collects and concatenates text from both `text/plain` and `text/html` parts (the
+    HTML stripped to plain text by a small stdlib-only tag-stripper, `_html_to_text`), so whichever
+    part actually has the real content is found by the keyword/amount parser either way. Didn't
+    happen to be the actual cause for *this* email specifically (its subject line alone carried
+    enough text for parsing to work, once the sender/watermark issue was fixed), but is a real gap
+    that would have broken plenty of other real bank templates.
+  - 4 new/rewritten backend tests built directly from the real email's structure and from the exact
+    failure mode (an HTML-only message, a multipart message with a useless plain-text stub, a
+    full-sweep-with-no-watermark scenario, and the "N:*" range-quirk filtering) — regression-tested
+    the same disciplined way as everything else in this project: reverted each fix in turn (the
+    `text/plain`-only extraction, the `ALL`-vs-`UNSEEN` search), confirmed the corresponding test
+    went red with a real, readable failure, then restored the fix and reconfirmed all 128 backend
+    tests green.
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.

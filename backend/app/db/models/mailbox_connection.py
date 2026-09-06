@@ -2,7 +2,7 @@ import enum
 import secrets
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -80,3 +80,11 @@ class MailboxConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     imap_host: Mapped[str | None] = mapped_column(String(255))
     imap_port: Mapped[int | None] = mapped_column(Integer)
     imap_password: Mapped[str | None] = mapped_column(EncryptedString(500))
+    # Highest IMAP UID already examined -- the real watermark for "have we
+    # looked at this message", not the mailbox's own \Seen flag (which a
+    # human reading the same inbox on their phone can set out from under
+    # us; see app/domain/imap_polling.py's poll_imap_connection docstring
+    # for the real deposit that got missed because of that). NULL means "no
+    # watermark yet" -- a connection created before this column existed;
+    # the next poll does a one-time full sweep instead of skipping ahead.
+    imap_last_uid: Mapped[int | None] = mapped_column(BigInteger)

@@ -25,7 +25,7 @@ from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_create_connection
 from app.domain.imap_polling import poll_imap_connection
-from app.domain.imap_provider import ImapAuthError, guess_imap_host, verify_imap_login
+from app.domain.imap_provider import ImapAuthError, connect_and_get_baseline_uid, guess_imap_host
 from app.domain.mailbox_providers import get_provider
 from app.domain.rbac import require_roles
 
@@ -85,13 +85,16 @@ async def create_connection(
             host, port = host or guessed[0], port or guessed[1]
 
         try:
-            await verify_imap_login(host=host, port=port, mailbox=payload.mailbox, password=payload.imap_password)
+            baseline_uid = await connect_and_get_baseline_uid(
+                host=host, port=port, mailbox=payload.mailbox, password=payload.imap_password
+            )
         except ImapAuthError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
         connection.imap_host = host
         connection.imap_port = port
         connection.imap_password = payload.imap_password
+        connection.imap_last_uid = baseline_uid
         connection.status = ConnectionStatus.CONNECTED
         db.add(connection)
         await db.flush()

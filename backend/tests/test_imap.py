@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.imap_polling import _parse_message
-from app.domain.imap_provider import ImapAuthError, guess_imap_host, verify_imap_login
+from app.domain.imap_polling import _fetch_new_sync, _parse_message
+from app.domain.imap_provider import ImapAuthError, connect_and_get_baseline_uid, guess_imap_host
 from tests.conftest import CapturingNotifier
 from tests.helpers import (
     add_active_member,
@@ -61,21 +61,29 @@ def test_guess_imap_host_recognizes_common_providers_and_falls_back_to_none():
     assert guess_imap_host("deposits@my-custom-church-domain.org") is None
 
 
-async def test_verify_imap_login_succeeds_on_ok_response():
+async def test_connect_and_get_baseline_uid_succeeds_and_reads_uidnext():
     imap_instance = MagicMock()
     imap_instance.login.return_value = ("OK", [b"done"])
+    imap_instance.status.return_value = ("OK", [b"INBOX (UIDNEXT 43)"])
     with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=imap_instance):
-        await verify_imap_login(host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="app-pw")
+        baseline = await connect_and_get_baseline_uid(
+            host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="app-pw"
+        )
     imap_instance.login.assert_called_once_with("a@gmail.com", "app-pw")
     imap_instance.logout.assert_called_once()
+    # UIDNEXT 43 means everything up to and including UID 42 already exists
+    # at connect time -- the baseline is "not new", not "the next message".
+    assert baseline == 42
 
 
-async def test_verify_imap_login_wraps_auth_failure_in_a_readable_message():
+async def test_connect_and_get_baseline_uid_wraps_auth_failure_in_a_readable_message():
     imap_instance = MagicMock()
     imap_instance.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
     with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=imap_instance):
         try:
-            await verify_imap_login(host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="wrong")
+            await connect_and_get_baseline_uid(
+                host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="wrong"
+            )
             raise AssertionError("expected ImapAuthError")
         except ImapAuthError as exc:
             assert "app-specific password" in str(exc)
@@ -148,12 +156,57 @@ def test_parse_message_prefers_html_content_over_a_bare_plaintext_stub():
     assert "$75.00" in fetched.message.body
 
 
+def test_fetch_new_sync_does_a_full_sweep_when_no_watermark_exists_yet():
+    # A real deposit was missed in production because the old design used
+    # "search UNSEEN" as its only tracking mechanism: the user read the
+    # notification email in their own phone's mail app, which marked it
+    # \Seen, and the poller (which only ever looked for UNSEEN mail) never
+    # found it again. since_uid=None models a connection that predates the
+    # UID watermark (MailboxConnection.imap_last_uid) existing at all -- it
+    # must sweep the whole mailbox with "ALL", not "UNSEEN", so an
+    # already-read message still gets picked up.
+    mock = MagicMock()
+    mock.uid.side_effect = lambda command, *args: (
+        ("OK", [b"1 2"]) if command == "search" else ("OK", [(b"1 (BODY[] {0}", _build_raw_email()), b")"])
+    )
+
+    with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=mock):
+        fetched, max_uid_seen = _fetch_new_sync(
+            host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", since_uid=None
+        )
+
+    mock.uid.assert_any_call("search", None, "ALL")
+    assert max_uid_seen == 2
+    assert len(fetched) == 2
+
+
+def test_fetch_new_sync_only_returns_uids_strictly_greater_than_the_watermark():
+    # IMAP's "N:*" range has a real quirk (RFC 3501): if N is past every
+    # real UID, some servers return the *last* message instead of nothing.
+    # Searching inclusive of since_uid and filtering it back out in Python
+    # (rather than trusting "since_uid+1:*") guards against that.
+    mock = MagicMock()
+    mock.uid.side_effect = lambda command, *args: (
+        ("OK", [b"5"]) if command == "search" else ("OK", [(b"5 (BODY[] {0}", _build_raw_email()), b")"])
+    )
+
+    with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=mock):
+        fetched, max_uid_seen = _fetch_new_sync(
+            host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", since_uid=5
+        )
+
+    mock.uid.assert_any_call("search", None, "UID 5:*")
+    assert fetched == []
+    assert max_uid_seen is None
+
+
 async def test_create_imap_connection_succeeds_with_an_auto_guessed_host(
     client: AsyncClient, db_session: AsyncSession
 ):
     owner_token, org = await _owner_org(client, "imapok")
     imap_instance = MagicMock()
     imap_instance.login.return_value = ("OK", [b"done"])
+    imap_instance.status.return_value = ("OK", [b"INBOX (UIDNEXT 1)"])
     with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=imap_instance):
         resp = await client.post(
             f"/v1/organizations/{org['id']}/connections",
@@ -213,6 +266,7 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
 
     creation_mock = MagicMock()
     creation_mock.login.return_value = ("OK", [b"done"])
+    creation_mock.status.return_value = ("OK", [b"INBOX (UIDNEXT 1)"])
     with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=creation_mock):
         resp = await client.post(
             f"/v1/organizations/{org['id']}/connections",
@@ -236,10 +290,18 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
     )
     assert resp.status_code == 200, resp.text
 
+    def uid_command(command: str, *args):
+        if command == "search":
+            return ("OK", [b"1"])
+        if command == "fetch":
+            return ("OK", [(b"1 (BODY[] {0}", _build_raw_email()), b")"])
+        if command == "store":
+            return ("OK", [b"done"])
+        raise AssertionError(f"unexpected UID command: {command}")
+
     poll_mock = MagicMock()
     poll_mock.login.return_value = ("OK", [b"done"])
-    poll_mock.search.return_value = ("OK", [b"1"])
-    poll_mock.fetch.return_value = ("OK", [(b"1 (BODY[] {0}", _build_raw_email()), b")"])
+    poll_mock.uid.side_effect = uid_command
 
     with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=poll_mock):
         resp = await client.post(
@@ -248,16 +310,17 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
         )
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"fetched": 1, "accepted": 1, "error": None}
-    poll_mock.store.assert_called_once_with("1", "+FLAGS", "\\Seen")
+    poll_mock.uid.assert_any_call("store", "1", "+FLAGS", "\\Seen")
 
     resp = await client.get(
         f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {owner_token}"}
     )
     assert resp.json()["contribution_count"] == 1
 
-    # Idempotent: polling again with the *same* message (now already
-    # ingested) must not double-count it, matching ingest_message's dedup
-    # guarantee for every other provider.
+    # Idempotent: polling again doesn't even refetch UID 1 (the watermark
+    # already advanced past it), and even if it did, ingest_message's dedup
+    # guarantee (shared with every other provider) would still stop it from
+    # being double-counted.
     with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=poll_mock):
         resp = await client.post(
             f"/v1/organizations/{org['id']}/connections/{connection['id']}/check-now",

@@ -1,5 +1,6 @@
 import asyncio
 import imaplib
+import re
 
 # Best-effort IMAP host/port for well-known providers, so connecting a
 # Gmail/Outlook/Yahoo/iCloud address never requires typing a hostname --
@@ -30,7 +31,7 @@ class ImapAuthError(Exception):
     """
 
 
-def _login_sync(*, host: str, port: int, mailbox: str, password: str) -> None:
+def _get_baseline_uid_sync(*, host: str, port: int, mailbox: str, password: str) -> int:
     try:
         connection = imaplib.IMAP4_SSL(host, port, timeout=10)
     except (OSError, imaplib.IMAP4.error) as exc:
@@ -40,6 +41,12 @@ def _login_sync(*, host: str, port: int, mailbox: str, password: str) -> None:
         typ, _ = connection.login(mailbox, password)
         if typ != "OK":
             raise ImapAuthError("The mail server rejected that email and password.")
+        typ, data = connection.status("INBOX", "(UIDNEXT)")
+        if typ != "OK" or not data or data[0] is None:
+            return 0
+        match = re.search(rb"UIDNEXT (\d+)", data[0])
+        uidnext = int(match.group(1)) if match else 1
+        return max(uidnext - 1, 0)
     except imaplib.IMAP4.error as exc:
         raise ImapAuthError(
             "Login failed. If this is Gmail, Outlook, Yahoo, or iCloud, make sure you're using "
@@ -53,9 +60,17 @@ def _login_sync(*, host: str, port: int, mailbox: str, password: str) -> None:
             pass
 
 
-async def verify_imap_login(*, host: str, port: int, mailbox: str, password: str) -> None:
-    """Raises ImapAuthError on failure; returns normally on a successful
-    login+logout. Run off the event loop the same way SmtpNotifier runs
-    smtplib -- one blocking stdlib call, not a hot path.
+async def connect_and_get_baseline_uid(*, host: str, port: int, mailbox: str, password: str) -> int:
+    """Validates the login (raises ImapAuthError on failure) and returns the
+    UID watermark a brand-new connection should start from: everything
+    already sitting in the mailbox at connect time is treated as "not new",
+    so connecting an inbox that's been in use for years doesn't dump its
+    entire history into the ledger. Contrast with a connection that
+    predates this watermark existing at all (NULL), which does a one-time
+    full sweep instead -- see MailboxConnection.imap_last_uid and
+    poll_imap_connection. Run off the event loop the same way SmtpNotifier
+    runs smtplib -- one blocking stdlib call, not a hot path.
     """
-    await asyncio.to_thread(_login_sync, host=host, port=port, mailbox=mailbox, password=password)
+    return await asyncio.to_thread(
+        _get_baseline_uid_sync, host=host, port=port, mailbox=mailbox, password=password
+    )

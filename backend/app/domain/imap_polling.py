@@ -125,29 +125,61 @@ def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
     )
 
 
-def _fetch_unseen_sync(*, host: str, port: int, mailbox: str, password: str) -> list[_FetchedMessage]:
+def _fetch_new_sync(
+    *, host: str, port: int, mailbox: str, password: str, since_uid: int | None
+) -> tuple[list[_FetchedMessage], int | None]:
+    """Fetches every message with a UID greater than since_uid (or, when
+    since_uid is None -- a connection that predates this watermark existing
+    -- every message in the mailbox, once, as a one-time catch-up sweep).
+
+    UID, not the \\Seen flag, is the source of truth for "have we looked at
+    this message" (see poll_imap_connection's docstring for why the \\Seen
+    flag alone was never safe to rely on). Returns the highest UID actually
+    examined alongside the fetched messages, so the caller can advance the
+    watermark past *everything looked at* -- including a message that fails
+    to parse -- not just the ones that were successfully ingested; otherwise
+    a single malformed message would wedge every poll into re-fetching it
+    forever.
+    """
     connection = imaplib.IMAP4_SSL(host, port, timeout=15)
     try:
         connection.login(mailbox, password)
         connection.select("INBOX")
-        typ, data = connection.search(None, "UNSEEN")
+
+        if since_uid is None:
+            typ, data = connection.uid("search", None, "ALL")
+        else:
+            # IMAP's "N:*" range has a real, documented quirk (RFC 3501):
+            # if N is higher than every UID in the mailbox, some servers
+            # return the *last* message instead of an empty result. Search
+            # inclusive of since_uid itself and filter it (and anything
+            # <=) back out below, rather than trusting "N+1:*" to behave.
+            typ, data = connection.uid("search", None, f"UID {since_uid}:*")
+
         if typ != "OK" or not data or not data[0]:
-            return []
+            return [], None
+
+        uids = [int(u) for u in data[0].split()]
+        if since_uid is not None:
+            uids = [u for u in uids if u > since_uid]
+        if not uids:
+            return [], None
 
         fetched: list[_FetchedMessage] = []
-        for uid in data[0].split():
+        for uid in uids:
             # BODY.PEEK[] (not BODY[]/RFC822) so fetching never marks a
-            # message \Seen on its own -- that only happens explicitly, after
-            # ingestion has actually succeeded (see _mark_seen_sync below).
-            typ, msg_data = connection.fetch(uid, "(BODY.PEEK[])")
+            # message \Seen on its own -- that's purely a courtesy to a
+            # human glancing at the mailbox (see _mark_seen_sync), not
+            # something ingestion tracking depends on anymore.
+            typ, msg_data = connection.uid("fetch", str(uid), "(BODY.PEEK[])")
             if typ != "OK" or not msg_data or msg_data[0] is None:
                 continue
             raw_bytes = msg_data[0][1]
             try:
-                fetched.append(_parse_message(uid, raw_bytes))
+                fetched.append(_parse_message(str(uid).encode(), raw_bytes))
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to parse IMAP message uid=%s from %s", uid, mailbox)
-        return fetched
+        return fetched, max(uids)
     finally:
         try:
             connection.logout()
@@ -162,7 +194,7 @@ def _mark_seen_sync(*, host: str, port: int, mailbox: str, password: str, uids: 
     try:
         connection.login(mailbox, password)
         connection.select("INBOX")
-        connection.store(",".join(uids), "+FLAGS", "\\Seen")
+        connection.uid("store", ",".join(uids), "+FLAGS", "\\Seen")
     finally:
         try:
             connection.logout()
@@ -178,12 +210,20 @@ class ImapPollSummary:
 
 
 async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) -> ImapPollSummary:
-    """Fetches unseen messages from a connected IMAP mailbox and runs each
+    """Fetches new messages from a connected IMAP mailbox and runs each
     through the same ingest_message pipeline the webhook path uses (spec 9.1)
     -- IMAP is pull-based instead of push, but everything downstream of
-    "here is a RawMessage" is identical. Idempotent by construction (see
-    ingest_message), so a message that's fetched but fails before its \\Seen
-    flag gets set is simply picked up again on the next poll, not double-counted.
+    "here is a RawMessage" is identical.
+
+    "New" is tracked with connection.imap_last_uid, a real persisted
+    watermark -- not the IMAP \\Seen flag. An earlier version of this used
+    "search UNSEEN" as its only tracking mechanism, which broke the moment
+    anything else touched the mailbox's read state: a human glancing at a
+    real deposit-notification inbox on their phone marks it \\Seen, and a
+    real deposit was silently never picked up because of it. The watermark
+    also makes this correctly idempotent even if ingestion or the \\Seen
+    mark-back below fails partway through -- see ingest_message for the
+    dedup guarantee that makes re-examining an already-ingested UID safe.
     """
     if connection.provider != MailboxProviderName.IMAP:
         return ImapPollSummary(fetched=0, accepted=0, error="Not an IMAP connection.")
@@ -191,12 +231,14 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
         return ImapPollSummary(fetched=0, accepted=0, error="IMAP connection is missing its credentials.")
 
     try:
-        fetched = await asyncio.to_thread(
-            _fetch_unseen_sync,
+        last_uid = int(connection.imap_last_uid) if connection.imap_last_uid is not None else None
+        fetched, max_uid_seen = await asyncio.to_thread(
+            _fetch_new_sync,
             host=connection.imap_host,
             port=connection.imap_port,
             mailbox=connection.mailbox,
             password=connection.imap_password,
+            since_uid=last_uid,
         )
     except (OSError, imaplib.IMAP4.error) as exc:
         connection.webhook_health = f"IMAP error: {exc}"[:255]
@@ -218,6 +260,8 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
             accepted += 1
             sessions_to_broadcast.append(result.event.session_id)
 
+    if max_uid_seen is not None:
+        connection.imap_last_uid = max_uid_seen
     connection.last_sync_at = utcnow()
     connection.webhook_health = "ok"
     await db.commit()
@@ -233,8 +277,9 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
                 uids=successfully_ingested_uids,
             )
         except (OSError, imaplib.IMAP4.error):
-            # Not fatal: the messages stay UNSEEN and are simply re-fetched
-            # (harmlessly, since ingest_message is idempotent) next poll.
+            # Not fatal: the watermark has already advanced above, so this
+            # is purely cosmetic for a human glancing at the mailbox --
+            # ingestion tracking doesn't depend on the \Seen flag at all.
             logger.exception("Failed to mark %d IMAP message(s) as seen", len(successfully_ingested_uids))
 
     for session_id in sessions_to_broadcast:
