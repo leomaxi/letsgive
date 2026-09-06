@@ -100,6 +100,54 @@ def test_parse_message_falls_back_to_a_stable_hash_when_message_id_is_missing():
     assert again.message.provider_message_id == fetched.message.provider_message_id
 
 
+def test_parse_message_extracts_text_from_an_html_only_email():
+    # A real deposit notification (Interac's own "Funds Deposited" template)
+    # was missed in production: the email was HTML-only, and _extract_body
+    # used to only ever look at text/plain, silently returning "" and
+    # losing the amount/keywords entirely. This is that email's actual shape.
+    msg = EmailMessage()
+    msg["From"] = "LEONARD MAXIMUS MENSAH <notify@payments.interac.ca>"
+    msg["To"] = "methodistchurchstjohns@gmail.com"
+    msg["Subject"] = "Interac e-Transfer: You've received $1.00 and it has been automatically deposited."
+    msg["Message-ID"] = "<interac-1@payments.interac.ca>"
+    msg.add_header("Content-Type", "text/html", charset="utf-8")
+    msg.set_payload(
+        "<html><body><table><tr><td>Funds Deposited!</td></tr>"
+        "<tr><td>$1.00</td></tr><tr><td>Amount:</td><td>$1.00 (CAD)</td></tr>"
+        "</table></body></html>",
+        charset="utf-8",
+    )
+
+    fetched = _parse_message(b"1", bytes(msg))
+    assert "Funds Deposited" in fetched.message.body
+    assert "$1.00" in fetched.message.body
+    # Tags must become whitespace, not nothing -- otherwise adjacent cells
+    # like "<td>$1.00</td><td>(CAD)</td>" would fuse into "$1.00(CAD)".
+    assert "$1.00 (CAD)" in fetched.message.body
+    assert "<td>" not in fetched.message.body
+
+
+def test_parse_message_prefers_html_content_over_a_bare_plaintext_stub():
+    # Multipart/alternative with a plain-text part that exists but omits the
+    # real content -- common for ESP-generated transactional email, and a
+    # second way the same bug could bite: finding *a* text/plain part isn't
+    # enough if that part is a stub. Both parts get collected, so whichever
+    # one has the real text is found either way.
+    msg = EmailMessage()
+    msg["From"] = "notify@payments.interac.ca"
+    msg["To"] = "methodistchurchstjohns@gmail.com"
+    msg["Subject"] = "Deposit notification"
+    msg["Message-ID"] = "<interac-2@payments.interac.ca>"
+    msg.set_content("View this email in HTML to see your transaction details.")
+    msg.add_alternative(
+        "<html><body>Funds Deposited! Amount: $75.00 (CAD)</body></html>", subtype="html"
+    )
+
+    fetched = _parse_message(b"2", bytes(msg))
+    assert "Funds Deposited" in fetched.message.body
+    assert "$75.00" in fetched.message.body
+
+
 async def test_create_imap_connection_succeeds_with_an_auto_guessed_host(
     client: AsyncClient, db_session: AsyncSession
 ):

@@ -2,8 +2,10 @@ import asyncio
 import email
 import email.utils
 import hashlib
+import html
 import imaplib
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
@@ -36,23 +38,57 @@ def _decode_str(value: str | None) -> str:
         return value
 
 
+def _html_to_text(raw_html: str) -> str:
+    """Strips tags to recover searchable plain text from an HTML email body.
+    Not a real renderer -- just enough for the keyword/amount matching in
+    app/domain/parsing.py to find real text, which is all that's needed here.
+    Tags are replaced with a space (not deleted outright) so adjacent table
+    cells like "<td>$1.00</td><td>(CAD)</td>" don't fuse into "$1.00(CAD)".
+    """
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw_html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
 def _extract_body(msg: email.message.Message) -> str:
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain" and "attachment" not in str(
-                part.get("Content-Disposition", "")
-            ):
-                charset = part.get_content_charset() or "utf-8"
-                try:
-                    return part.get_payload(decode=True).decode(charset, errors="replace")
-                except Exception:  # noqa: BLE001
-                    continue
-        return ""
-    charset = msg.get_content_charset() or "utf-8"
-    payload = msg.get_payload(decode=True)
-    if payload is None:
-        return ""
-    return payload.decode(charset, errors="replace")
+    """Real bank/Interac notification templates are routinely HTML-only (or
+    multipart/alternative with a bare-bones plain-text stub that omits the
+    actual amount/details) -- a real deposit notification was missed in
+    production because this only ever looked at text/plain and silently gave
+    up with "" the moment that part was absent or a stub, even though the
+    HTML part right next to it had the real content. Both parts are now
+    collected and concatenated: whichever one turns out to have the real
+    text, the keyword/amount search in parsing.py will find it either way.
+    """
+    if not msg.is_multipart():
+        content_type = msg.get_content_type()
+        charset = msg.get_content_charset() or "utf-8"
+        payload = msg.get_payload(decode=True)
+        if payload is None:
+            return ""
+        decoded = payload.decode(charset, errors="replace")
+        return _html_to_text(decoded) if content_type == "text/html" else decoded
+
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    for part in msg.walk():
+        content_type = part.get_content_type()
+        if content_type not in ("text/plain", "text/html"):
+            continue
+        if "attachment" in str(part.get("Content-Disposition", "")):
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            decoded = part.get_payload(decode=True).decode(charset, errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        if content_type == "text/plain":
+            plain_parts.append(decoded)
+        else:
+            html_parts.append(_html_to_text(decoded))
+
+    return "\n".join(plain_parts + html_parts)
 
 
 def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
