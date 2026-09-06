@@ -1,5 +1,5 @@
 export type Role = "owner" | "finance" | "media" | "auditor" | "system_admin";
-export type MembershipStatus = "invited" | "active" | "suspended";
+export type MembershipStatus = "invited" | "active" | "suspended" | "requested";
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
 
 export interface User {
@@ -27,6 +27,7 @@ export interface Organization {
   timezone: string;
   currency: string;
   nonprofit_type: string[] | null;
+  join_code: string;
   status: string;
   plan_id: string | null;
   subscription_status: SubscriptionStatus;
@@ -44,6 +45,37 @@ export interface Invitation {
   organization_name: string;
   role: Role;
   status: MembershipStatus;
+  created_at: string;
+}
+
+export type NotificationType = "approval_code";
+
+export interface Notification {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  session_id: string | null;
+  type: NotificationType;
+  title: string;
+  body: string;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface JoinRequest {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  status: MembershipStatus;
+  created_at: string;
+}
+
+export interface OrgJoinRequest {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  user_email: string;
+  user_full_name: string;
   created_at: string;
 }
 

@@ -171,15 +171,8 @@ export default function ReconciliationPage() {
 
   if (!activeOrg) return null;
 
-  const canView = activeOrg.role === "owner" || activeOrg.role === "finance" || activeOrg.role === "auditor";
-  if (!canView) {
-    return (
-      <Card className="text-sm text-slate-500 dark:text-slate-400">
-        Only Owner, Finance and Auditor can view the reconciliation queue.
-      </Card>
-    );
-  }
-
+  // Any active member can view -- the backend matches (see
+  // app/api/v1/reconciliation.py). Only resolving stays Finance-only.
   const canResolve = activeOrg.role === "finance";
 
   return (

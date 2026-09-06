@@ -45,6 +45,9 @@ function ConnectionsSection() {
   const { activeOrg } = useOrg();
   const queryClient = useQueryClient();
 
+  const canManage = activeOrg?.role === "owner" || activeOrg?.role === "finance";
+  const canCheckNow = canManage || activeOrg?.role === "media";
+
   const [providerKind, setProviderKind] = useState<"imap" | "fake">("imap");
   const [mailbox, setMailbox] = useState("");
   const [imapPassword, setImapPassword] = useState("");
@@ -122,10 +125,10 @@ function ConnectionsSection() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge tone={CONNECTION_STATUS_TONE[c.status]}>{c.status}</Badge>
-                {c.status === "connected" && c.provider === "imap" && (
+                {canCheckNow && c.status === "connected" && c.provider === "imap" && (
                   <CheckNowButton connectionId={c.id} />
                 )}
-                {c.status !== "revoked" && (
+                {canManage && c.status !== "revoked" && (
                   <Button
                     variant="secondary"
                     disabled={revokeMutation.isPending}
@@ -142,6 +145,13 @@ function ConnectionsSection() {
         <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No mailbox connections yet.</p>
       )}
 
+      {!canManage && (
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Only Owners and Finance officers can connect or revoke a mailbox.
+        </p>
+      )}
+
+      {canManage && (
       <form onSubmit={onSubmit} className="space-y-3" noValidate>
         <div className="flex gap-4 text-sm">
           <label className="flex items-center gap-2">
@@ -240,6 +250,7 @@ function ConnectionsSection() {
               : "Add"}
         </Button>
       </form>
+      )}
       <ErrorText>{error}</ErrorText>
     </Card>
   );
@@ -330,6 +341,8 @@ function ParserProfilesSection() {
   const { activeOrg } = useOrg();
   const queryClient = useQueryClient();
 
+  const canManage = activeOrg?.role === "owner" || activeOrg?.role === "finance";
+
   const [name, setName] = useState("");
   const [senderPatterns, setSenderPatterns] = useState("");
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.75);
@@ -403,29 +416,31 @@ function ParserProfilesSection() {
                 <div className="text-xs text-slate-400 dark:text-slate-500">
                   {p.sender_patterns.join(", ")} · confidence ≥ {p.confidence_threshold}
                 </div>
-                <div className="mt-2 flex gap-2">
-                  <Button variant="secondary" onClick={() => setEditingId(p.id)}>
-                    Edit
-                  </Button>
-                  {confirmingDeleteId === p.id ? (
-                    <>
-                      <Button
-                        variant="danger"
-                        disabled={deleteMutation.isPending}
-                        onClick={() => deleteMutation.mutate(p.id)}
-                      >
-                        Confirm delete
-                      </Button>
-                      <Button variant="secondary" onClick={() => setConfirmingDeleteId(null)}>
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button variant="secondary" onClick={() => setConfirmingDeleteId(p.id)}>
-                      Delete
+                {canManage && (
+                  <div className="mt-2 flex gap-2">
+                    <Button variant="secondary" onClick={() => setEditingId(p.id)}>
+                      Edit
                     </Button>
-                  )}
-                </div>
+                    {confirmingDeleteId === p.id ? (
+                      <>
+                        <Button
+                          variant="danger"
+                          disabled={deleteMutation.isPending}
+                          onClick={() => deleteMutation.mutate(p.id)}
+                        >
+                          Confirm delete
+                        </Button>
+                        <Button variant="secondary" onClick={() => setConfirmingDeleteId(null)}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <Button variant="secondary" onClick={() => setConfirmingDeleteId(p.id)}>
+                        Delete
+                      </Button>
+                    )}
+                  </div>
+                )}
               </li>
             ),
           )}
@@ -434,6 +449,13 @@ function ParserProfilesSection() {
         <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No parser profiles yet.</p>
       )}
 
+      {!canManage && (
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Only Owners and Finance officers can create or change parser profiles.
+        </p>
+      )}
+
+      {canManage && (
       <form onSubmit={onSubmit} className="space-y-3" noValidate>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Profile name" htmlFor="profileName">
@@ -475,6 +497,7 @@ function ParserProfilesSection() {
           {createMutation.isPending ? "Creating…" : "Add parser profile"}
         </Button>
       </form>
+      )}
     </Card>
   );
 }
@@ -484,14 +507,8 @@ export default function MailboxSettingsPage() {
 
   if (!activeOrg) return null;
 
-  if (activeOrg.role !== "owner" && activeOrg.role !== "finance") {
-    return (
-      <Card className="text-sm text-slate-500 dark:text-slate-400">
-        Only Owners and Finance officers can manage mailbox connections and parser profiles.
-      </Card>
-    );
-  }
-
+  // Any active member can view; ConnectionsSection/ParserProfilesSection
+  // each gate their own create/edit/delete controls to Owner/Finance.
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Mailbox &amp; parsing</h1>

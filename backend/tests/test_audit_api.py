@@ -18,7 +18,11 @@ async def test_owner_can_list_audit_logs(client: AsyncClient, db_session: AsyncS
     assert "organization.created" in actions
 
 
-async def test_media_cannot_list_audit_logs(client: AsyncClient, db_session: AsyncSession):
+async def test_media_can_list_audit_logs(client: AsyncClient, db_session: AsyncSession):
+    """Read access to the audit log is any active member, not just
+    Owner/Finance/Auditor -- a team should see what happened in their own
+    org (see app/api/v1/audit.py).
+    """
     owner_token = await register_and_login(client, "owner-audit2@example.org")
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, "Audit Org 2")
@@ -30,7 +34,7 @@ async def test_media_cannot_list_audit_logs(client: AsyncClient, db_session: Asy
         f"/v1/organizations/{org['id']}/audit-logs",
         headers={"Authorization": f"Bearer {media_token}"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
 
 
 async def test_auditor_can_list_audit_logs(client: AsyncClient, db_session: AsyncSession):

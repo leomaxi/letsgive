@@ -1,12 +1,12 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeRoute } from "@/App";
 import RequireAuth from "@/auth/RequireAuth";
 import { AuthProvider } from "@/auth/AuthContext";
 import { OrgProvider } from "@/auth/OrgContext";
-import { authApi, invitationApi, orgApi } from "@/lib/endpoints";
+import { authApi, invitationApi, joinRequestApi, orgApi } from "@/lib/endpoints";
 import type { Invitation, MyOrganization, User } from "@/lib/types";
 
 vi.mock("@/lib/endpoints", async (importOriginal) => {
@@ -16,6 +16,7 @@ vi.mock("@/lib/endpoints", async (importOriginal) => {
     authApi: { ...actual.authApi, me: vi.fn() },
     orgApi: { ...actual.orgApi, listMine: vi.fn() },
     invitationApi: { ...actual.invitationApi, list: vi.fn() },
+    joinRequestApi: { ...actual.joinRequestApi, listMine: vi.fn() },
   };
 });
 
@@ -37,6 +38,7 @@ function makeOrg(overrides: Partial<MyOrganization> = {}): MyOrganization {
     timezone: "UTC",
     currency: "CAD",
     nonprofit_type: null,
+    join_code: "AB2CD3EF",
     status: "active",
     plan_id: "plan1",
     subscription_status: "trialing",
@@ -93,6 +95,12 @@ function renderHome() {
 }
 
 describe("HomeRoute", () => {
+  beforeEach(() => {
+    // No test in this file exercises join requests specifically -- default
+    // to none so HomeRoute's extra query doesn't need mocking in every case.
+    vi.mocked(joinRequestApi.listMine).mockResolvedValue([]);
+  });
+
   it("redirects to /organizations/new once both org and invitation lists settle empty", async () => {
     vi.mocked(orgApi.listMine).mockResolvedValue([]);
     vi.mocked(invitationApi.list).mockResolvedValue([]);

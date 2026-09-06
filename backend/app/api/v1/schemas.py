@@ -8,6 +8,7 @@ from app.db.models.contribution_event import ContributionDecision
 from app.db.models.display_template import ElementType
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxProviderName
 from app.db.models.membership import MembershipStatus, Role
+from app.db.models.notification import NotificationType
 from app.db.models.organization import SubscriptionStatus
 from app.db.models.reconciliation_item import ReconciliationResolution, ReconciliationStatus
 from app.db.models.session import SessionStatus
@@ -65,6 +66,7 @@ class OrganizationOut(BaseModel):
     timezone: str
     currency: str
     nonprofit_type: list[str] | None
+    join_code: str
     status: str
     plan_id: str | None
     subscription_status: SubscriptionStatus
@@ -129,6 +131,55 @@ class InvitationOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class NotificationOut(BaseModel):
+    id: str
+    organization_id: str
+    organization_name: str
+    session_id: str | None
+    type: NotificationType
+    title: str
+    body: str
+    read_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class JoinOrganizationRequest(BaseModel):
+    join_code: str = Field(min_length=1, max_length=20)
+
+
+class JoinRequestOut(BaseModel):
+    """A pending join-code request, from the requester's own point of view."""
+
+    id: str
+    organization_id: str
+    organization_name: str
+    status: MembershipStatus
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OrgJoinRequestOut(BaseModel):
+    """A pending join-code request, from the Owner's point of view -- who is
+    asking to join and with what account, so the Owner can decide.
+    """
+
+    id: str
+    organization_id: str
+    user_id: str
+    user_email: EmailStr
+    user_full_name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ApproveJoinRequestRequest(BaseModel):
+    role: Role
 
 
 class SessionCreateRequest(BaseModel):

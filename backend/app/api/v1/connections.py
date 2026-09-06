@@ -134,10 +134,11 @@ async def list_connections(
     membership: Membership = Depends(get_membership),
     db: AsyncSession = Depends(get_db),
 ) -> list[MailboxConnection]:
-    # Media needs read access to pick a connection when creating a session,
-    # even though only Owner/Finance can create or revoke one. Nothing
-    # sensitive is exposed here (no token_ref/webhook_secret in the schema).
-    require_roles(membership, Role.OWNER, Role.FINANCE, Role.MEDIA)
+    # Read-only for any active member (Media needs it to pick a connection
+    # when creating a session; the rest of the team can see it too, same
+    # reasoning as audit-logs/reconciliation) -- only create/revoke below
+    # stay Owner/Finance-only. Nothing sensitive is exposed here (no
+    # token_ref/webhook_secret/imap_password in the schema).
     result = await db.execute(
         select(MailboxConnection).where(MailboxConnection.organization_id == organization_id)
     )
@@ -255,7 +256,8 @@ async def list_parser_profiles(
     membership: Membership = Depends(get_membership),
     db: AsyncSession = Depends(get_db),
 ) -> list[ParserProfile]:
-    require_roles(membership, Role.OWNER, Role.FINANCE)
+    # Read-only for any active member -- only create/update/delete below
+    # stay Owner/Finance-only.
     result = await db.execute(
         select(ParserProfile).where(ParserProfile.organization_id == organization_id)
     )

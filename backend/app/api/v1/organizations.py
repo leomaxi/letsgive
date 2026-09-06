@@ -136,7 +136,14 @@ async def list_members(
     result = await db.execute(
         select(Membership, User)
         .join(User, User.id == Membership.user_id)
-        .where(Membership.organization_id == membership.organization_id)
+        .where(
+            Membership.organization_id == membership.organization_id,
+            # REQUESTED rows have no role yet and live in their own
+            # "join requests" list (GET .../join-requests) instead --
+            # mixing them in here would break MembershipOut.role (non-null)
+            # and confuse "member" with "asked to join".
+            Membership.status != MembershipStatus.REQUESTED,
+        )
         .order_by(Membership.created_at)
     )
     return [_to_membership_out(m, u) for m, u in result.all()]

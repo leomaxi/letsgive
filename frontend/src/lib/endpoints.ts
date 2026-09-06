@@ -7,12 +7,15 @@ import type {
   ElementType,
   ImapCheckNowResult,
   Invitation,
+  JoinRequest,
   MailboxConnection,
   MfaEnrollResponse,
   Membership,
   MyOrganization,
+  Notification,
   Organization,
   OperatorSocketTokenResponse,
+  OrgJoinRequest,
   ParserProfile,
   Plan,
   ReconciliationItem,
@@ -84,6 +87,35 @@ export const invitationApi = {
 
 export const plansApi = {
   list: () => api.get<Plan[]>("/v1/plans"),
+};
+
+export const notificationApi = {
+  list: (unreadOnly = false) =>
+    api.get<Notification[]>(`/v1/me/notifications${unreadOnly ? "?unread_only=true" : ""}`),
+
+  markRead: (notificationId: string) =>
+    api.post<Notification>(`/v1/me/notifications/${notificationId}/read`),
+
+  markAllRead: () => api.post<void>("/v1/me/notifications/read-all"),
+};
+
+export const joinRequestApi = {
+  join: (joinCode: string) =>
+    api.post<JoinRequest>("/v1/organizations/join", { join_code: joinCode }),
+
+  listMine: () => api.get<JoinRequest[]>("/v1/me/join-requests"),
+
+  cancelMine: (joinRequestId: string) =>
+    api.post<void>(`/v1/me/join-requests/${joinRequestId}/cancel`),
+
+  listForOrg: (orgId: string) =>
+    api.get<OrgJoinRequest[]>(`/v1/organizations/${orgId}/join-requests`),
+
+  approve: (orgId: string, joinRequestId: string, role: string) =>
+    api.post<Membership>(`/v1/organizations/${orgId}/join-requests/${joinRequestId}/approve`, { role }),
+
+  deny: (orgId: string, joinRequestId: string) =>
+    api.post<void>(`/v1/organizations/${orgId}/join-requests/${joinRequestId}/deny`),
 };
 
 export interface CreateSessionPayload {

@@ -1,15 +1,16 @@
-# Deploying Let's Give to letsgive.pellutech.com
+# Deploying Let's Give to letsgive.ca
 
 Target: a Linux server that already runs **nginx** and **MySQL**, deploying this app at
-`https://letsgive.pellutech.com`. Assumes SSH access with sudo, and that nginx/MySQL are
+`https://letsgive.ca`. Assumes SSH access with sudo, and that nginx/MySQL are
 already accepting other traffic on the box (this guide adds a new site + a new database,
 touches neither).
 
 ## 0. Before you start
 
-- **DNS**: point an A (and AAAA, if you have IPv6) record for `letsgive.pellutech.com` at this
-  server's public IP. Not something this guide can do for you — do it in whatever DNS provider
-  hosts `pellutech.com`, and give it time to propagate before the TLS step.
+- **DNS**: point an A (and AAAA, if you have IPv6) record for the apex `letsgive.ca` (and a
+  `www` record, if you want `www.letsgive.ca` to resolve too) at this server's public IP. Not
+  something this guide can do for you — do it wherever `letsgive.ca`'s nameservers are managed
+  (check your `.ca` registrar's DNS panel), and give it time to propagate before the TLS step.
 - **MySQL version**: confirm you're on **MySQL 8.0+ or MariaDB 10.3+**.
   ```bash
   mysql --version
@@ -125,7 +126,7 @@ LETSGIVE_MFA_ISSUER=Let's Give
 # LETSGIVE_SMTP_PORT=587
 # LETSGIVE_SMTP_USERNAME=...
 # LETSGIVE_SMTP_PASSWORD=...
-# LETSGIVE_SMTP_FROM_EMAIL=noreply@letsgive.pellutech.com
+# LETSGIVE_SMTP_FROM_EMAIL=noreply@letsgive.ca
 EOF
 sudo chmod 600 /opt/letsgive/app/backend/.env
 ```
@@ -196,10 +197,10 @@ Three backend paths need to reach Uvicorn — `/v1/` (REST + the two WebSocket c
 built SPA, with a client-routing fallback to `index.html`.
 
 ```bash
-sudo tee /etc/nginx/sites-available/letsgive.pellutech.com > /dev/null <<'EOF'
+sudo tee /etc/nginx/sites-available/letsgive.ca > /dev/null <<'EOF'
 server {
     listen 80;
-    server_name letsgive.pellutech.com;
+    server_name letsgive.ca;
 
     root /opt/letsgive/app/frontend/dist;
     index index.html;
@@ -244,19 +245,19 @@ server {
 }
 EOF
 
-sudo ln -s /etc/nginx/sites-available/letsgive.pellutech.com /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/letsgive.ca /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-At this point `http://letsgive.pellutech.com` should load the app over plain HTTP. Confirm before
+At this point `http://letsgive.ca` should load the app over plain HTTP. Confirm before
 moving to TLS — it's easier to debug a proxy/static-file problem without also debugging a cert.
 
 ## 8. TLS
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d letsgive.pellutech.com
+sudo certbot --nginx -d letsgive.ca
 ```
 
 Certbot edits the server block to add the 443 listener and cert paths, and sets up its own renewal
@@ -266,7 +267,7 @@ timer. No app-level change needed — the frontend derives `wss://` vs `ws://` f
 ## 9. Verify end to end
 
 ```bash
-curl -s https://letsgive.pellutech.com/healthz
+curl -s https://letsgive.ca/healthz
 ```
 
 Then in a browser: register an account, enroll MFA, create an organization, create a session, and

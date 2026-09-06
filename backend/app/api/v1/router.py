@@ -5,7 +5,9 @@ from app.api.v1 import (
     auth,
     connections,
     display_templates,
+    join_requests,
     me,
+    notifications,
     organizations,
     plans,
     reconciliation,
@@ -17,7 +19,10 @@ from app.api.v1 import (
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(me.router)
+api_router.include_router(notifications.router)
 api_router.include_router(organizations.router)
+api_router.include_router(join_requests.router)
+api_router.include_router(join_requests.me_router)
 api_router.include_router(sessions.router)
 api_router.include_router(sessions.org_sessions_router)
 api_router.include_router(connections.router)

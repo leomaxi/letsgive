@@ -37,8 +37,9 @@ async def list_reconciliation_items(
     membership: Membership = Depends(get_membership),
     db: AsyncSession = Depends(get_db),
 ) -> list[ReconciliationItem]:
-    require_roles(membership, Role.FINANCE, Role.AUDITOR, Role.OWNER)
-
+    # Read-only for any active member -- only resolve() below stays
+    # Finance-only. Media initiates the sessions this queue is about; they
+    # should be able to see its state too, not just Finance/Auditor/Owner.
     query = select(ReconciliationItem).where(ReconciliationItem.organization_id == organization_id)
     if status_filter is not None:
         query = query.where(ReconciliationItem.status == status_filter)

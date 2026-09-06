@@ -47,6 +47,7 @@ function makeOrg(overrides: Partial<MyOrganization> = {}): MyOrganization {
     timezone: "UTC",
     currency: "CAD",
     nonprofit_type: null,
+    join_code: "AB2CD3EF",
     status: "active",
     plan_id: "plan1",
     subscription_status: "trialing",

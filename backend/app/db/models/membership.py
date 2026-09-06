@@ -29,6 +29,11 @@ class MembershipStatus(str, enum.Enum):
     INVITED = "invited"
     ACTIVE = "active"
     SUSPENDED = "suspended"
+    # Self-service join-by-code (POST /v1/organizations/join): the requester
+    # picked an org by code, not a role -- the Owner assigns one on approval
+    # (see app/api/v1/join_requests.py). Never granted any access itself:
+    # get_membership/load_active_membership only ever return ACTIVE rows.
+    REQUESTED = "requested"
 
 
 class Membership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -39,13 +44,16 @@ class Membership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     organization_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("organizations.id"), nullable=False
     )
-    role: Mapped[Role] = mapped_column(
+    # Nullable only for a REQUESTED row, which by definition has no role
+    # assigned yet -- every other status always has one (enforced in the API
+    # layer: a request is only ever created without a role, and can only
+    # transition to ACTIVE by the approve endpoint, which requires one).
+    role: Mapped[Role | None] = mapped_column(
         SAEnum(
             Role,
             name="membership_role",
             values_callable=lambda enum_cls: [e.value for e in enum_cls],
         ),
-        nullable=False,
     )
     status: Mapped[MembershipStatus] = mapped_column(
         SAEnum(

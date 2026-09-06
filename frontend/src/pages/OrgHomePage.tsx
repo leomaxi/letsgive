@@ -5,6 +5,7 @@ import { ApiError } from "@/lib/api";
 import { orgApi } from "@/lib/endpoints";
 import type { Role } from "@/lib/types";
 import { Badge, Button, Card, ErrorText, Field, Input, Label, Spinner } from "@/components/ui";
+import JoinRequestsCard from "@/components/JoinRequestsCard";
 
 const ROLES: Role[] = ["owner", "finance", "media", "auditor"];
 
@@ -24,6 +25,7 @@ export default function OrgHomePage() {
   const [role, setRole] = useState<Role>("media");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
 
   const membersQuery = useQuery({
     queryKey: ["members", activeOrg?.id],
@@ -89,6 +91,32 @@ export default function OrgHomePage() {
         </Card>
 
         <Card>
+          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Organization code
+          </h2>
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+            Share this with a teammate -- they can enter it when they sign up to request access, and
+            you approve them with a role.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="rounded-md bg-slate-100 px-3 py-2 text-lg font-semibold tracking-widest text-slate-800 dark:bg-slate-900 dark:text-slate-100">
+              {activeOrg.join_code}
+            </code>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                navigator.clipboard.writeText(activeOrg.join_code).then(() => {
+                  setCodeCopied(true);
+                  setTimeout(() => setCodeCopied(false), 2000);
+                });
+              }}
+            >
+              {codeCopied ? "Copied!" : "Copy"}
+            </Button>
+          </div>
+        </Card>
+
+        <Card>
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Members
           </h2>
@@ -112,6 +140,8 @@ export default function OrgHomePage() {
           )}
         </Card>
       </div>
+
+      {isOwner && <JoinRequestsCard />}
 
       {isOwner && (
         <Card className="max-w-md">

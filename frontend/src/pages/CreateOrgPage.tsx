@@ -86,8 +86,15 @@ export default function CreateOrgPage() {
     <div className="mx-auto max-w-lg px-4 py-10">
       <Card>
         <h1 className="mb-1 text-xl font-semibold text-slate-900 dark:text-slate-100">Set up your organization</h1>
-        <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">
+        <p className="mb-2 text-sm text-slate-500 dark:text-slate-400">
           You'll be its Owner. You can invite Finance and Media teammates afterward.
+        </p>
+        <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">
+          Joining an existing team instead?{" "}
+          <Link to="/organizations/join" className="text-brand-600 hover:text-brand-700">
+            Enter an organization code
+          </Link>
+          .
         </p>
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Organization name" htmlFor="name">

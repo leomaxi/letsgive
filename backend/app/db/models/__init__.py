@@ -5,6 +5,7 @@ from app.db.models.display_element import DisplayElement
 from app.db.models.display_template import DEFAULT_CANVAS, DisplayTemplate, ElementType
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, MembershipStatus, Role
+from app.db.models.notification import Notification, NotificationType
 from app.db.models.organization import Organization, SubscriptionStatus
 from app.db.models.parser_profile import ParserProfile
 from app.db.models.plan import SEED_PLANS, Plan
@@ -32,6 +33,8 @@ __all__ = [
     "Membership",
     "MembershipStatus",
     "Role",
+    "Notification",
+    "NotificationType",
     "Organization",
     "ParserProfile",
     "Plan",

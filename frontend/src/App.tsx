@@ -5,8 +5,9 @@ import RequireAuth from "@/auth/RequireAuth";
 import { useOrg } from "@/auth/OrgContext";
 import DashboardLayout from "@/components/DashboardLayout";
 import InvitationsCard from "@/components/InvitationsCard";
+import JoinRequestsPendingCard from "@/components/JoinRequestsPendingCard";
 import { Card, Spinner } from "@/components/ui";
-import { invitationApi } from "@/lib/endpoints";
+import { invitationApi, joinRequestApi } from "@/lib/endpoints";
 // OrgHomePage is imported eagerly, not lazily like the routes below: it's
 // rendered directly inside HomeRoute (not just as a route element), and
 // it's the landing page nearly every authenticated session hits first
@@ -18,6 +19,7 @@ const LoginPage = lazy(() => import("@/pages/LoginPage"));
 const RegisterPage = lazy(() => import("@/pages/RegisterPage"));
 const MfaSetupPage = lazy(() => import("@/pages/MfaSetupPage"));
 const CreateOrgPage = lazy(() => import("@/pages/CreateOrgPage"));
+const JoinOrganizationPage = lazy(() => import("@/pages/JoinOrganizationPage"));
 const SessionsListPage = lazy(() => import("@/pages/SessionsListPage"));
 const NewSessionPage = lazy(() => import("@/pages/NewSessionPage"));
 const SessionDetailPage = lazy(() => import("@/pages/SessionDetailPage"));
@@ -43,8 +45,12 @@ export function HomeRoute() {
     queryKey: ["my-invitations"],
     queryFn: invitationApi.list,
   });
+  const joinRequestsQuery = useQuery({
+    queryKey: ["my-join-requests"],
+    queryFn: joinRequestApi.listMine,
+  });
 
-  if (isLoading || invitationsQuery.isLoading) {
+  if (isLoading || invitationsQuery.isLoading || joinRequestsQuery.isLoading) {
     return (
       <div className="flex justify-center py-16">
         <Spinner className="h-6 w-6 text-brand-600" />
@@ -53,16 +59,17 @@ export function HomeRoute() {
   }
 
   const hasInvitations = (invitationsQuery.data?.length ?? 0) > 0;
+  const hasJoinRequests = (joinRequestsQuery.data?.length ?? 0) > 0;
 
-  if (organizations.length === 0 && !hasInvitations) {
+  if (organizations.length === 0 && !hasInvitations && !hasJoinRequests) {
     // Accepting/declining an invitation invalidates both this org list and
     // the invitations list, and the two refetches can land a render apart.
-    // Wait for both to settle before trusting "0 orgs, 0 invites" enough to
-    // redirect -- otherwise that one stale frame bounces the user to
-    // /organizations/new right after they accepted something. This check is
-    // scoped to just this branch (not the whole component) so it can't turn
-    // into a mount/refetch loop with InvitationsCard below.
-    if (isFetching || invitationsQuery.isFetching) {
+    // Wait for all three to settle before trusting "nothing at all" enough
+    // to redirect -- otherwise a stale frame bounces the user to
+    // /organizations/new right after they accepted or requested something.
+    // This check is scoped to just this branch (not the whole component) so
+    // it can't turn into a mount/refetch loop with the cards below.
+    if (isFetching || invitationsQuery.isFetching || joinRequestsQuery.isFetching) {
       return (
         <div className="flex justify-center py-16">
           <Spinner className="h-6 w-6 text-brand-600" />
@@ -75,6 +82,7 @@ export function HomeRoute() {
   return (
     <div className="space-y-6">
       <InvitationsCard />
+      <JoinRequestsPendingCard />
       {organizations.length > 0 ? (
         <OrgHomePage />
       ) : (
@@ -103,6 +111,7 @@ export default function App() {
           <Route element={<DashboardLayout />}>
             <Route path="/" element={<HomeRoute />} />
             <Route path="/organizations/new" element={<CreateOrgPage />} />
+            <Route path="/organizations/join" element={<JoinOrganizationPage />} />
             <Route path="/sessions" element={<SessionsListPage />} />
             <Route path="/sessions/new" element={<NewSessionPage />} />
             <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />

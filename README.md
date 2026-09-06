@@ -961,7 +961,7 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   toggling the switch, confirming it persists across a reload, and confirming it renders correctly on
   first load with no theme flash.
 - **Fixed a real production bug found after this app's first live deployment**
-  (`letsgive.pellutech.com`): the "Get projection link" button on the operator console
+  (`letsgive.ca`): the "Get projection link" button on the operator console
   (`SessionDetailPage.tsx`) hardcoded `:8000` onto the generated URL, a leftover from working around
   the dev proxy only forwarding `/v1`, not `/display`. That's harmless in dev (backend listens on
   8000 directly) but produces a dead link in production, where nginx proxies `/display/` on the same
@@ -1013,6 +1013,53 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   everywhere else). **Verified live**: renamed a real profile from "TD Bank" to "TD Bank Deposits"
   through the UI and watched it update in place, then deleted it through the confirm step and
   watched the list return to "No parser profiles yet."
+- **In-app notifications, team-wide read visibility, and join-by-code membership** — three related
+  requests after live use as a real team (Owner + Finance + Media):
+  - **In-app notifications** (`Notification` model, migration `0011`, `app/domain/inbox.py`): a
+    finance officer now sees their approval code inside the app itself, not only in an email they
+    may not have open. `request_approval` writes one alongside the existing `notifier.send_otp`
+    call — same plaintext code, same expiry, an additional delivery channel rather than a new
+    control. `GET/POST /v1/me/notifications...` (list, mark-one-read, mark-all-read) back a new
+    `NotificationsBell` in the header (unread badge, 15s poll, click-to-open dropdown, click-to-read).
+  - **Team-wide read access**: audit log, reconciliation queue, mailbox connections, and parser
+    profiles were Owner/Finance(/Auditor)-only to *view*, not just to edit — Media (and Auditor,
+    for the mailbox/parser endpoints) couldn't see any of it. All four are now open to any active
+    member for reading, matching the pattern sessions/operator/templates already used
+    (`get_membership` alone, no extra role check); every write action (create/edit/delete/resolve/
+    revoke) keeps its existing Owner/Finance-only gate. `MailboxSettingsPage.tsx` now renders its
+    lists for everyone and only shows the add/edit/delete forms to Owner/Finance.
+  - **Join by organization code**, an alternative to an Owner-sent invite: `Organization` gets an
+    auto-generated 8-character `join_code` (migration `0012`; ambiguous characters like `0`/`O` and
+    `1`/`I` excluded on purpose). `POST /v1/organizations/join` lets any signed-in user submit a
+    code to *request* membership — a new `MembershipStatus.REQUESTED` row with `role = NULL`, which
+    grants nothing on its own (`get_membership`/`load_active_membership` only ever return `ACTIVE`
+    rows, so a pending request is invisible to every existing permission check without needing a
+    single one of them touched). The Owner reviews requests on the org home page (new
+    `JoinRequestsCard`) and approves (assigning a role, same MFA-required-role check `invite_member`
+    already enforces) or denies; the requester sees their own pending requests
+    (`JoinRequestsPendingCard`, mirroring `InvitationsCard`) and can cancel. `HomeRoute` was extended
+    to query join requests alongside invitations before deciding whether to redirect to
+    "create an organization," the same careful settle-before-redirect logic already documented there
+    for invitations.
+  - **Found and fixed a real, unrelated bug while browser-testing the join flow**: switching
+    accounts in the same tab (sign out, sign in as someone else) left the *previous* user's cached
+    organization/members/sessions data on screen. Root cause: `AuthContext.tsx`'s `login`/`logout`
+    never touched the React Query cache, and every query key in this app has no user id in it
+    (the app only ever expects one signed-in user per tab) -- so nothing told already-mounted
+    queries to refetch for the new user. The real API calls were always correctly scoped (a 404
+    for the new user's now-irrelevant org id showed up in the network log the whole time); only the
+    UI was stale. Fixed with a single `queryClient.clear()` in both `login()` and `logout()`. Two
+    regression tests (`src/auth/AuthContext.test.tsx`) seed the cache, log in as a second user, and
+    assert the stale entry is gone; regression-tested the same disciplined way as everything else in
+    this project -- commented out both `queryClient.clear()` calls, confirmed both tests went red
+    with the exact stale data still present, then restored the fix and reconfirmed green.
+  - 21 new backend tests (`tests/test_notifications_inbox.py`, `tests/test_join_requests.py`) plus
+    the audit-log role test flipped from "Media cannot" to "Media can." **Verified live end to end**
+    in a real three-user browser session (Owner/Finance/Media all in one org): Finance saw the OTP
+    code appear in their notification bell the moment Media requested approval; Media could load the
+    full audit log and a read-only mailbox/parser page; a fourth, brand-new user entered the org's
+    join code, showed up as a pending request with their name/email, and was approved as Media by
+    the Owner, appearing in the members list immediately with zero manual DB work.
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.

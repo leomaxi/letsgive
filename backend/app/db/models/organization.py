@@ -1,4 +1,5 @@
 import enum
+import secrets
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,16 @@ class SubscriptionStatus(str, enum.Enum):
     CANCELED = "canceled"
 
 
+# Excludes visually-ambiguous characters (0/O, 1/I/L) -- this code is meant
+# to be read aloud or retyped by a prospective teammate, so those pairs are
+# a source of real support tickets, not a security concern.
+_JOIN_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def generate_join_code() -> str:
+    return "".join(secrets.choice(_JOIN_CODE_ALPHABET) for _ in range(8))
+
+
 class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "organizations"
 
@@ -32,6 +43,13 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # app/api/v1/schemas.py -- this column just stores the joined form,
     # since a nonprofit's type tags are never individually filtered/queried).
     nonprofit_type: Mapped[str | None] = mapped_column(String(500))
+    # Shareable code a prospective teammate can enter to *request* to join
+    # (see POST /v1/organizations/join) -- distinct from an owner-sent
+    # invite: the Owner still has to approve the request and assign a role
+    # before it grants any access (app/api/v1/join_requests.py).
+    join_code: Mapped[str] = mapped_column(
+        String(12), unique=True, index=True, nullable=False, default=generate_join_code
+    )
     plan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plans.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 

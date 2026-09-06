@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import { getToken, setToken } from "@/lib/api";
 import { authApi } from "@/lib/endpoints";
@@ -16,6 +17,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -44,6 +46,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function login(email: string, password: string, mfaCode?: string) {
     const { access_token } = await authApi.login(email, password, mfaCode);
+    // Every query in the cache (org list, sessions, members, notifications,
+    // ...) is keyed with no user id in it, since the app only ever expects
+    // one signed-in user per tab. Switching accounts in the same tab without
+    // clearing it would otherwise keep serving the *previous* user's cached
+    // data -- the real API calls correctly 404/scope to the new user, but
+    // nothing tells already-mounted queries to refetch, so the screen would
+    // silently show someone else's organization until a hard reload.
+    queryClient.clear();
     setToken(access_token);
     await refreshUser();
   }
@@ -53,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function logout() {
+    queryClient.clear();
     setToken(null);
     setUser(null);
   }

@@ -53,12 +53,14 @@ from app.db.models.contribution_event import ContributionDecision, ContributionE
 from app.db.models.display_template import DisplayTemplate, ElementType
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
 from app.db.models.membership import Membership, MembershipStatus, Role
+from app.db.models.notification import NotificationType
 from app.db.models.organization import Organization
 from app.db.models.session import Session, SessionStatus
 from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_create_session
+from app.domain.inbox import notify_user
 from app.domain.ledger import compute_ledger_totals
 from app.domain.notifications import Notifier, get_notifier
 from app.domain.qr import qr_data_uri
@@ -280,8 +282,27 @@ async def request_approval(
 
     await db.flush()
 
+    org = await db.get(Organization, session.organization_id)
+    org_name = org.name if org is not None else "your organization"
+
     for finance_user in finance_users:
         await notifier.send_otp(to_email=finance_user.email, code=code, session_id=session.id)
+        # In-app, not just email -- a finance officer needs to see the code
+        # inside the platform itself (spec follow-up), since they may not
+        # have that inbox open. Same plaintext code, same expiry; this is
+        # an additional delivery channel, not a separate control.
+        await notify_user(
+            db,
+            user_id=finance_user.id,
+            organization_id=session.organization_id,
+            type=NotificationType.APPROVAL_CODE,
+            title=f"Approval code for {org_name}",
+            body=(
+                f"A live-session approval code was requested. Code: {code}. "
+                f"It expires in {APPROVAL_TTL_MINUTES} minutes."
+            ),
+            session_id=session.id,
+        )
 
     await record_audit_event(
         db,

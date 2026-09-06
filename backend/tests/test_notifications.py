@@ -13,7 +13,7 @@ async def test_smtp_notifier_sends_a_real_message_with_correct_envelope():
             port=587,
             username="letsgive",
             password="hunter2",
-            from_email="noreply@letsgive.pellutech.com",
+            from_email="noreply@letsgive.ca",
             use_tls=True,
         )
         await notifier.send_otp(to_email="finance@example.org", code="123456", session_id="sess-1")
@@ -23,7 +23,7 @@ async def test_smtp_notifier_sends_a_real_message_with_correct_envelope():
     smtp_instance.login.assert_called_once_with("letsgive", "hunter2")
     sent_message = smtp_instance.send_message.call_args[0][0]
     assert sent_message["To"] == "finance@example.org"
-    assert sent_message["From"] == "noreply@letsgive.pellutech.com"
+    assert sent_message["From"] == "noreply@letsgive.ca"
     assert "123456" in sent_message.get_payload()
     assert "sess-1" in sent_message.get_payload()
 
@@ -37,7 +37,7 @@ async def test_smtp_notifier_skips_login_and_starttls_when_not_configured():
             port=1025,
             username="",
             password="",
-            from_email="noreply@letsgive.pellutech.com",
+            from_email="noreply@letsgive.ca",
             use_tls=False,
         )
         await notifier.send_otp(to_email="finance@example.org", code="999999", session_id="sess-2")
@@ -60,7 +60,7 @@ def test_default_notifier_switches_to_smtp_once_host_is_configured():
         smtp_port=2525,
         smtp_username="u",
         smtp_password="p",
-        smtp_from_email="noreply@letsgive.pellutech.com",
+        smtp_from_email="noreply@letsgive.ca",
         smtp_use_tls=False,
     )
     with patch("app.domain.notifications.get_settings", return_value=fake_settings):

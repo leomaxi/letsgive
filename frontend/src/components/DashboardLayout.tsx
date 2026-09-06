@@ -4,19 +4,19 @@ import { useOrg } from "@/auth/OrgContext";
 import { useTheme } from "@/auth/ThemeContext";
 import { Badge } from "@/components/ui";
 import BrandMark from "@/components/BrandMark";
+import NotificationsBell from "@/components/NotificationsBell";
 
+// Every read-only page below is now open to any active member (the team
+// can see sessions/logs/templates/mailbox config, not just Owner/Finance) --
+// each page gates its own write controls (add/edit/delete/resolve) to the
+// roles that can actually perform them. Only Billing stays fully restricted.
 const NAV_ITEMS = [
   { to: "/", label: "Overview", end: true, roles: null },
   { to: "/sessions", label: "Sessions", end: false, roles: null },
-  { to: "/mailbox", label: "Mailbox & parsing", end: false, roles: ["owner", "finance"] },
+  { to: "/mailbox", label: "Mailbox & parsing", end: false, roles: null },
   { to: "/display-studio", label: "Display Studio", end: false, roles: null },
-  {
-    to: "/reconciliation",
-    label: "Reconciliation",
-    end: false,
-    roles: ["owner", "finance", "auditor"],
-  },
-  { to: "/audit", label: "Audit log", end: false, roles: ["owner", "finance", "auditor"] },
+  { to: "/reconciliation", label: "Reconciliation", end: false, roles: null },
+  { to: "/audit", label: "Audit log", end: false, roles: null },
   { to: "/billing", label: "Billing", end: false, roles: ["owner", "finance"] },
 ] as const;
 
@@ -57,6 +57,7 @@ export default function DashboardLayout() {
             )}
           </div>
           <div className="flex flex-shrink-0 items-center gap-4">
+            <NotificationsBell />
             <button
               onClick={toggleTheme}
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
