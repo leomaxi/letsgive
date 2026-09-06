@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { connectionApi, parserProfileApi } from "@/lib/endpoints";
-import type { ConnectionStatus } from "@/lib/types";
+import type { ConnectionStatus, ParserProfile } from "@/lib/types";
 import { Badge, Button, Card, ErrorText, Field, Input, Spinner } from "@/components/ui";
 
 const CONNECTION_STATUS_TONE: Record<ConnectionStatus, "slate" | "green" | "red" | "amber"> = {
@@ -245,6 +245,87 @@ function ConnectionsSection() {
   );
 }
 
+function ParserProfileEditForm({
+  profile,
+  onDone,
+}: {
+  profile: ParserProfile;
+  onDone: () => void;
+}) {
+  const { activeOrg } = useOrg();
+  const queryClient = useQueryClient();
+
+  const [name, setName] = useState(profile.name);
+  const [senderPatterns, setSenderPatterns] = useState(profile.sender_patterns.join(", "));
+  const [confidenceThreshold, setConfidenceThreshold] = useState(profile.confidence_threshold);
+  const [isActive, setIsActive] = useState(profile.is_active);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      parserProfileApi.update(activeOrg!.id, profile.id, {
+        name,
+        sender_patterns: senderPatterns
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        confidence_threshold: confidenceThreshold,
+        is_active: isActive,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["parser-profiles", activeOrg?.id] });
+      onDone();
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : "Could not save changes."),
+  });
+
+  return (
+    <li className="space-y-3 py-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Profile name" htmlFor={`editName-${profile.id}`}>
+          <Input id={`editName-${profile.id}`} value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Confidence threshold (0–1)" htmlFor={`editConfidence-${profile.id}`}>
+          <Input
+            id={`editConfidence-${profile.id}`}
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={confidenceThreshold}
+            onChange={(e) => setConfidenceThreshold(Number(e.target.value))}
+          />
+        </Field>
+      </div>
+      <Field label="Sender addresses/domains (comma-separated)" htmlFor={`editPatterns-${profile.id}`}>
+        <Input
+          id={`editPatterns-${profile.id}`}
+          value={senderPatterns}
+          onChange={(e) => setSenderPatterns(e.target.value)}
+        />
+      </Field>
+      <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+        <input
+          type="checkbox"
+          className="rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800"
+          checked={isActive}
+          onChange={(e) => setIsActive(e.target.checked)}
+        />
+        Active
+      </label>
+      <ErrorText>{error}</ErrorText>
+      <div className="flex gap-2">
+        <Button disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+          {updateMutation.isPending ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="secondary" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
 function ParserProfilesSection() {
   const { activeOrg } = useOrg();
   const queryClient = useQueryClient();
@@ -253,6 +334,8 @@ function ParserProfilesSection() {
   const [senderPatterns, setSenderPatterns] = useState("");
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.75);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
   const profilesQuery = useQuery({
     queryKey: ["parser-profiles", activeOrg?.id],
@@ -279,6 +362,14 @@ function ParserProfilesSection() {
     onError: (err) => setError(err instanceof ApiError ? err.message : "Could not create the profile."),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (profileId: string) => parserProfileApi.remove(activeOrg!.id, profileId),
+    onSuccess: () => {
+      setConfirmingDeleteId(null);
+      queryClient.invalidateQueries({ queryKey: ["parser-profiles", activeOrg?.id] });
+    },
+  });
+
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     createMutation.mutate();
@@ -298,19 +389,46 @@ function ParserProfilesSection() {
         <Spinner className="h-5 w-5 text-brand-600" />
       ) : profilesQuery.data && profilesQuery.data.length > 0 ? (
         <ul className="mb-4 divide-y divide-slate-100 text-sm dark:divide-slate-700">
-          {profilesQuery.data.map((p) => (
-            <li key={p.id} className="py-2">
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-slate-700 dark:text-slate-300">{p.name}</span>
-                <Badge tone={p.is_active ? "green" : "slate"}>
-                  {p.is_active ? "active" : "inactive"}
-                </Badge>
-              </div>
-              <div className="text-xs text-slate-400 dark:text-slate-500">
-                {p.sender_patterns.join(", ")} · confidence ≥ {p.confidence_threshold}
-              </div>
-            </li>
-          ))}
+          {profilesQuery.data.map((p) =>
+            editingId === p.id ? (
+              <ParserProfileEditForm key={p.id} profile={p} onDone={() => setEditingId(null)} />
+            ) : (
+              <li key={p.id} className="py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-slate-700 dark:text-slate-300">{p.name}</span>
+                  <Badge tone={p.is_active ? "green" : "slate"}>
+                    {p.is_active ? "active" : "inactive"}
+                  </Badge>
+                </div>
+                <div className="text-xs text-slate-400 dark:text-slate-500">
+                  {p.sender_patterns.join(", ")} · confidence ≥ {p.confidence_threshold}
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <Button variant="secondary" onClick={() => setEditingId(p.id)}>
+                    Edit
+                  </Button>
+                  {confirmingDeleteId === p.id ? (
+                    <>
+                      <Button
+                        variant="danger"
+                        disabled={deleteMutation.isPending}
+                        onClick={() => deleteMutation.mutate(p.id)}
+                      >
+                        Confirm delete
+                      </Button>
+                      <Button variant="secondary" onClick={() => setConfirmingDeleteId(null)}>
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button variant="secondary" onClick={() => setConfirmingDeleteId(p.id)}>
+                      Delete
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ),
+          )}
         </ul>
       ) : (
         <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No parser profiles yet.</p>

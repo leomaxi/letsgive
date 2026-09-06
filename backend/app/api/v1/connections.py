@@ -9,6 +9,7 @@ from app.api.v1.schemas import (
     MailboxConnectionOut,
     ParserProfileCreateRequest,
     ParserProfileOut,
+    ParserProfileUpdateRequest,
 )
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
@@ -259,3 +260,83 @@ async def list_parser_profiles(
         select(ParserProfile).where(ParserProfile.organization_id == organization_id)
     )
     return list(result.scalars().all())
+
+
+@router.patch("/parser-profiles/{profile_id}", response_model=ParserProfileOut)
+async def update_parser_profile(
+    organization_id: str,
+    profile_id: str,
+    payload: ParserProfileUpdateRequest,
+    request: Request,
+    membership: Membership = Depends(get_membership),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ParserProfile:
+    require_roles(membership, Role.OWNER, Role.FINANCE)
+
+    profile = await db.get(ParserProfile, profile_id)
+    if profile is None or profile.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parser profile not found.")
+
+    before = {
+        "name": profile.name,
+        "sender_patterns": profile.sender_patterns,
+        "is_active": profile.is_active,
+    }
+
+    updates = payload.model_dump(exclude_unset=True)
+    if "default_currency" in updates and updates["default_currency"] is not None:
+        updates["default_currency"] = updates["default_currency"].upper()
+    for field, value in updates.items():
+        setattr(profile, field, value)
+
+    await record_audit_event(
+        db,
+        action="parser_profile.updated",
+        target_type="parser_profile",
+        target_id=profile.id,
+        organization_id=organization_id,
+        actor_user_id=current_user.id,
+        before=before,
+        after={"name": profile.name, "sender_patterns": profile.sender_patterns, "is_active": profile.is_active},
+        ip_address=_client_ip(request),
+    )
+
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
+
+@router.delete("/parser-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_parser_profile(
+    organization_id: str,
+    profile_id: str,
+    request: Request,
+    membership: Membership = Depends(get_membership),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    require_roles(membership, Role.OWNER, Role.FINANCE)
+
+    profile = await db.get(ParserProfile, profile_id)
+    if profile is None or profile.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parser profile not found.")
+
+    # Safe to hard-delete: nothing references a parser profile by id --
+    # ContributionEvent only copies its template_version string at ingest
+    # time (see app/domain/ingestion.py), so historical ledger rows are
+    # completely unaffected by a profile being deleted later.
+    await db.delete(profile)
+
+    await record_audit_event(
+        db,
+        action="parser_profile.deleted",
+        target_type="parser_profile",
+        target_id=profile_id,
+        organization_id=organization_id,
+        actor_user_id=current_user.id,
+        before={"name": profile.name, "sender_patterns": profile.sender_patterns},
+        ip_address=_client_ip(request),
+    )
+
+    await db.commit()

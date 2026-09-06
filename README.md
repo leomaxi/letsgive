@@ -991,6 +991,28 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   with the joined string. **Verified live**: created an org selecting two nonprofit types via
   ctrl-click and confirmed `nonprofit_type = "Congregation,Foundation"` round-tripped correctly by
   reading the row directly out of the database.
+- **Found a second real bug from the same production deployment**: `SessionsListPage.tsx` had its
+  own separate `role === "media" || role === "finance"` check gating the "New session" button —
+  missed in the Owner-session-rights change above, which only touched `NewSessionPage.tsx`'s
+  internal guard and the backend. An Owner landing on `/sessions` still saw no way in at all, even
+  though the create form itself now accepted them. Grepped the whole frontend for every remaining
+  `role === "media"` check afterward to confirm nothing else was missed (there wasn't). **Verified
+  live**: signed in as Owner, confirmed "New session" now renders on the sessions list and the
+  empty-state message reads "Create one" instead of "A Media or Finance teammate can create one."
+- **Parser profiles gained edit and delete**, closing a real gap — only create/list ever existed;
+  there was no way to fix a typo'd sender pattern or retire a profile short of a direct DB edit.
+  Added `PATCH`/`DELETE /organizations/{id}/parser-profiles/{id}` (Owner/Finance, matching
+  create/list) — `PATCH` is a partial update (`exclude_unset`, so an omitted field is left alone,
+  not reset), `DELETE` is a real hard delete since nothing references a profile by id
+  (`ContributionEvent` only copies its `template_version` string at ingest time, so historical ledger
+  rows are unaffected). Frontend: each profile row gets **Edit** (opens an inline form pre-filled
+  with its current name/patterns/confidence/active state) and **Delete** with the same two-step
+  confirm pattern already used in Display Studio. 5 new backend tests
+  (`tests/test_connections.py`) cover a full update+delete round trip, Media being rejected from
+  both, and cross-org isolation (404, not 403, matching this app's tenant-isolation convention
+  everywhere else). **Verified live**: renamed a real profile from "TD Bank" to "TD Bank Deposits"
+  through the UI and watched it update in place, then deleted it through the confirm step and
+  watched the list return to "No parser profiles yet."
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.

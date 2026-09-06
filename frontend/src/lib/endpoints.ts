@@ -190,12 +190,25 @@ export interface CreateParserProfilePayload {
   default_currency?: string;
 }
 
+export interface UpdateParserProfilePayload {
+  name?: string;
+  sender_patterns?: string[];
+  confidence_threshold?: number;
+  is_active?: boolean;
+}
+
 export const parserProfileApi = {
   listForOrg: (orgId: string) =>
     api.get<ParserProfile[]>(`/v1/organizations/${orgId}/parser-profiles`),
 
   create: (orgId: string, payload: CreateParserProfilePayload) =>
     api.post<ParserProfile>(`/v1/organizations/${orgId}/parser-profiles`, payload),
+
+  update: (orgId: string, profileId: string, payload: UpdateParserProfilePayload) =>
+    api.patch<ParserProfile>(`/v1/organizations/${orgId}/parser-profiles/${profileId}`, payload),
+
+  remove: (orgId: string, profileId: string) =>
+    api.delete<void>(`/v1/organizations/${orgId}/parser-profiles/${profileId}`),
 };
 
 export const reconciliationApi = {

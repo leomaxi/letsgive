@@ -275,6 +275,19 @@ class ParserProfileCreateRequest(BaseModel):
     confidence_threshold: float = Field(default=0.75, ge=0, le=1)
 
 
+class ParserProfileUpdateRequest(BaseModel):
+    """All fields optional -- PATCH semantics, only supplied fields change."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=150)
+    sender_patterns: list[str] | None = Field(default=None, min_length=1)
+    credit_keywords: list[str] | None = None
+    reject_keywords: list[str] | None = None
+    amount_pattern: str | None = None
+    default_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    confidence_threshold: float | None = Field(default=None, ge=0, le=1)
+    is_active: bool | None = None
+
+
 class ParserProfileOut(BaseModel):
     id: str
     organization_id: str

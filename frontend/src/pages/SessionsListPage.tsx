@@ -28,7 +28,8 @@ export default function SessionsListPage() {
 
   if (!activeOrg) return null;
 
-  const canCreate = activeOrg.role === "media" || activeOrg.role === "finance";
+  const canCreate =
+    activeOrg.role === "owner" || activeOrg.role === "media" || activeOrg.role === "finance";
 
   return (
     <div className="space-y-6">
