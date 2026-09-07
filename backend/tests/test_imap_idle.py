@@ -56,7 +56,7 @@ async def test_poll_imap_connection_serializes_concurrent_calls_for_the_same_con
         order.append("start")
         time.sleep(0.05)  # runs in the real thread pool via asyncio.to_thread
         order.append("end")
-        return [], None
+        return MagicMock(), [], None
 
     with patch("app.domain.imap_polling._fetch_new_sync", side_effect=fake_fetch_new_sync):
         await asyncio.gather(

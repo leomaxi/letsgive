@@ -1559,3 +1559,44 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     but the underlying ~25-35s-per-connection cost is unchanged and will still show up as the delay
     between the IDLE push and the count actually changing.
   - Full suite (168 backend) green; 1 new regression test. **Not deployed yet.**
+- **Root cause finally isolated via live diagnostics on the server itself, and it led to a second real
+  fix independent of whatever the actual network-level cause turns out to be.** A raw
+  `socket.create_connection` to the mailbox host took 11.3s the first time and instant on a repeat —
+  consistent with a cold DNS cache miss, except a direct DNS-only test (`getent hosts`,
+  `dig @1.1.1.1`) came back fast both times, ruling that out too. The decisive test replicated the
+  app's *exact* connect→login→select→search sequence against the real mailbox, broken into phases:
+  connect+TLS `0.07s`, login `0.50s`, **select INBOX `8.38s`**, search `8.44s`. Connect and login are
+  fine; `SELECT INBOX` itself — a single, simple, universally-cheap IMAP command on most providers —
+  costs a real, consistent ~8 seconds on this specific (large, long-lived) Gmail mailbox. This is a
+  known Gmail-at-scale characteristic (its label/thread-based backend computing an IMAP folder view
+  isn't free the way a flat-file mailbox's is), not a bug anywhere in this codebase, and not something
+  application code can make faster directly.
+  - **What application code *could* control: how many times per cycle that ~8s tax gets paid.**
+    Before this round, a single accepted deposit paid it up to three times — once in `_fetch_new_sync`,
+    a second time in the old separate `_mark_seen_sync`, and a third time in the IDLE watcher's own
+    reconnect — which is exactly why the end-to-end delays kept landing in the 25-60s range everywhere
+    they were captured. Fixed the one part of that stack that was purely redundant: `_fetch_new_sync`
+    (`app/domain/imap_polling.py`) now returns its still-open, already-SELECTed connection instead of
+    logging out immediately, and `_mark_seen_on_connection_sync` (replacing the old `_mark_seen_sync`)
+    reuses that same connection to flag the message `\Seen` instead of opening, logging into, and
+    SELECTing a second one from scratch. `_poll_imap_connection_locked` now wraps everything after the
+    fetch in a `try/finally` that closes the one connection exactly once, whatever happens in between
+    (ingestion, commit, broadcast, mark-seen) — removing one whole redundant ~8s connection from every
+    single accepted deposit's path, independent of and in addition to last round's broadcast-ordering
+    fix.
+  - Regression-tested the disciplined way: temporarily made mark-seen open a second dummy connection
+    again (simulating the old bug), confirmed the existing test's new
+    `imap_ssl_class_mock.assert_called_once()` assertion fails with "Called 2 times", restored,
+    confirmed green. Updated the two direct `_fetch_new_sync` unit tests for its new 3-tuple return
+    (connection, fetched, max_uid_seen) and confirmed it returns the connection *without* logging it
+    out (the caller's job now). Full suite (168 backend) green.
+  - **The IDLE watcher's own reconnect still pays this ~8s SELECT cost on every single iteration**
+    (each push notification or ~23-minute timeout triggers a brand new connection) — this round didn't
+    touch that, since merging it with the short-lived fetch connection would be a much larger
+    architectural change (the fetch path is also independently reachable from the manual check-now
+    button and the slow fallback loop, neither of which has an IDLE connection to reuse) and wasn't
+    something today's evidence specifically called for. If the ~8s-per-notification cost from *that*
+    remaining connection ever becomes the next bottleneck worth chasing, that's the place to look.
+  - **Still not deployed. The underlying "why does Gmail's SELECT cost 8s on this mailbox" is not
+    something to fix — it's real, provider-side behavior at this mailbox's scale** — the two fixes
+    this round and last reduce how many times the app pays it per deposit, not the cost itself.

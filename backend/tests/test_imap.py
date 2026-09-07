@@ -191,13 +191,18 @@ def test_fetch_new_sync_does_a_full_sweep_when_no_watermark_exists_yet():
     )
 
     with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=mock):
-        fetched, max_uid_seen = _fetch_new_sync(
+        returned_connection, fetched, max_uid_seen = _fetch_new_sync(
             host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", since_uid=None
         )
 
     mock.uid.assert_any_call("search", None, "ALL")
     assert max_uid_seen == 2
     assert len(fetched) == 2
+    # The connection comes back open (not logged out) so the caller can
+    # reuse it to mark messages \Seen without paying for a second full
+    # connect+login+SELECT cycle -- see _fetch_new_sync's docstring.
+    assert returned_connection is mock
+    mock.logout.assert_not_called()
 
 
 def test_fetch_new_sync_only_returns_uids_strictly_greater_than_the_watermark():
@@ -211,7 +216,7 @@ def test_fetch_new_sync_only_returns_uids_strictly_greater_than_the_watermark():
     )
 
     with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=mock):
-        fetched, max_uid_seen = _fetch_new_sync(
+        _, fetched, max_uid_seen = _fetch_new_sync(
             host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", since_uid=5
         )
 
@@ -387,6 +392,12 @@ async def test_broadcast_runs_before_marking_the_message_seen(
     # broadcast that makes the operator console and public display actually
     # update, needlessly delaying the one thing that has to feel instant for
     # a purely cosmetic mailbox flag a human might never even look at.
+    #
+    # Separately, also confirms mark-seen now reuses the *same* connection
+    # _fetch_new_sync already opened rather than opening its own second one:
+    # another real measurement found plain SELECT INBOX alone costing ~8s on
+    # a large real mailbox, so a second connection meant paying that twice
+    # for every single accepted deposit.
     owner_token, org = await _owner_org(client, "imapbroadcastorder")
     await add_active_member(
         client, db_session, owner_token, org["id"], "finance-imapbroadcastorder@example.org",
@@ -439,7 +450,7 @@ async def test_broadcast_runs_before_marking_the_message_seen(
         order.append("broadcast")
 
     with (
-        patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=poll_mock),
+        patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=poll_mock) as imap_ssl_class_mock,
         patch("app.api.v1.sessions.broadcast_session_update", side_effect=fake_broadcast),
     ):
         resp = await client.post(
@@ -449,3 +460,6 @@ async def test_broadcast_runs_before_marking_the_message_seen(
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"fetched": 1, "accepted": 1, "error": None}
     assert order == ["broadcast", "mark_seen"]
+    # One connection for the whole cycle (fetch + mark-seen), not two.
+    imap_ssl_class_mock.assert_called_once()
+    poll_mock.logout.assert_called_once()

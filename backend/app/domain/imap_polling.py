@@ -206,9 +206,16 @@ def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
     )
 
 
+def _logout_sync(connection: imaplib.IMAP4_SSL) -> None:
+    try:
+        connection.logout()
+    except Exception:  # noqa: BLE001 -- best-effort cleanup
+        pass
+
+
 def _fetch_new_sync(
     *, host: str, port: int, mailbox: str, password: str, since_uid: int | None
-) -> tuple[list[_FetchedMessage], int | None]:
+) -> tuple[imaplib.IMAP4_SSL, list[_FetchedMessage], int | None]:
     """Fetches every message with a UID greater than since_uid (or, when
     since_uid is None -- a connection that predates this watermark existing
     -- every message in the mailbox, once, as a one-time catch-up sweep).
@@ -221,6 +228,17 @@ def _fetch_new_sync(
     to parse -- not just the ones that were successfully ingested; otherwise
     a single malformed message would wedge every poll into re-fetching it
     forever.
+
+    Also returns the still-open, already-SELECTed connection itself -- a
+    real production measurement found plain SELECT INBOX alone costing
+    ~8 seconds on a large real mailbox (Gmail's backend apparently does
+    real work computing a folder view at that scale), and this app was
+    paying that cost *twice* per accepted deposit: once here, and again in
+    a wholly separate connection the old _mark_seen_sync opened moments
+    later just to flag \\Seen. The caller now reuses this same connection
+    for that instead, and is responsible for logging it out (via
+    _logout_sync) whether or not it does so -- this function only closes it
+    itself if returning early due to an error.
     """
     connection = imaplib.IMAP4_SSL(host, port, timeout=15)
     try:
@@ -238,20 +256,20 @@ def _fetch_new_sync(
             typ, data = connection.uid("search", None, f"UID {since_uid}:*")
 
         if typ != "OK" or not data or not data[0]:
-            return [], None
+            return connection, [], None
 
         uids = [int(u) for u in data[0].split()]
         if since_uid is not None:
             uids = [u for u in uids if u > since_uid]
         if not uids:
-            return [], None
+            return connection, [], None
 
         fetched: list[_FetchedMessage] = []
         for uid in uids:
             # BODY.PEEK[] (not BODY[]/RFC822) so fetching never marks a
             # message \Seen on its own -- that's purely a courtesy to a
-            # human glancing at the mailbox (see _mark_seen_sync), not
-            # something ingestion tracking depends on anymore.
+            # human glancing at the mailbox (see _mark_seen_on_connection_sync),
+            # not something ingestion tracking depends on anymore.
             typ, msg_data = connection.uid("fetch", str(uid), "(BODY.PEEK[])")
             if typ != "OK" or not msg_data or msg_data[0] is None:
                 continue
@@ -260,27 +278,21 @@ def _fetch_new_sync(
                 fetched.append(_parse_message(str(uid).encode(), raw_bytes))
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to parse IMAP message uid=%s from %s", uid, mailbox)
-        return fetched, max(uids)
-    finally:
-        try:
-            connection.logout()
-        except Exception:  # noqa: BLE001
-            pass
+        return connection, fetched, max(uids)
+    except Exception:
+        _logout_sync(connection)
+        raise
 
 
-def _mark_seen_sync(*, host: str, port: int, mailbox: str, password: str, uids: list[str]) -> None:
+def _mark_seen_on_connection_sync(connection: imaplib.IMAP4_SSL, uids: list[str]) -> None:
+    """Marks the given UIDs \\Seen on an already-open, already-SELECTed
+    connection -- see _fetch_new_sync's docstring for why this no longer
+    opens (and pays a second ~8s SELECT for) its own separate connection.
+    Does not log out; the caller owns this connection's lifecycle.
+    """
     if not uids:
         return
-    connection = imaplib.IMAP4_SSL(host, port, timeout=15)
-    try:
-        connection.login(mailbox, password)
-        connection.select("INBOX")
-        connection.uid("store", ",".join(uids), "+FLAGS", "\\Seen")
-    finally:
-        try:
-            connection.logout()
-        except Exception:  # noqa: BLE001
-            pass
+    connection.uid("store", ",".join(uids), "+FLAGS", "\\Seen")
 
 
 @dataclass
@@ -338,7 +350,7 @@ async def _poll_imap_connection_locked(
     fetch_started = time.monotonic()
     try:
         last_uid = int(connection.imap_last_uid) if connection.imap_last_uid is not None else None
-        fetched, max_uid_seen = await asyncio.to_thread(
+        imap_connection, fetched, max_uid_seen = await asyncio.to_thread(
             _fetch_new_sync,
             host=connection.imap_host,
             port=connection.imap_port,
@@ -366,74 +378,79 @@ async def _poll_imap_connection_locked(
             fetch_seconds,
         )
 
-    accepted = 0
-    successfully_ingested_uids: list[str] = []
-    sessions_to_broadcast: list[str] = []
+    try:
+        accepted = 0
+        successfully_ingested_uids: list[str] = []
+        sessions_to_broadcast: list[str] = []
 
-    for item in fetched:
-        result: IngestResult = await ingest_message(db, connection=connection, message=item.message)
-        _record_recent_message(
-            connection.id,
-            uid=item.uid,
-            message=item.message,
-            decision=result.event.decision.value,
-            reason=result.event.decision_reason,
-        )
-        successfully_ingested_uids.append(item.uid)
-        if (
-            not result.already_processed
-            and result.event.decision == ContributionDecision.ACCEPTED
-            and result.event.session_id is not None
-        ):
-            accepted += 1
-            sessions_to_broadcast.append(result.event.session_id)
-
-    if max_uid_seen is not None:
-        connection.imap_last_uid = max_uid_seen
-    connection.last_sync_at = utcnow()
-    connection.webhook_health = "ok"
-    await db.commit()
-
-    # Broadcast BEFORE marking \Seen, deliberately -- a real production
-    # measurement showed marking \Seen (its own separate IMAP connect/
-    # login/select/store round trip, purely cosmetic for a human glancing at
-    # the mailbox -- ingestion tracking doesn't depend on it at all) taking
-    # ~25-35s on a slow connection, needlessly delaying the one thing that
-    # actually needs to feel instant: the operator console and public
-    # display updating the moment a real deposit is accepted. The
-    # contribution is already committed above by this point either way.
-    for session_id in sessions_to_broadcast:
-        session = await db.get(Session, session_id)
-        if session is not None:
-            from app.api.v1.sessions import broadcast_session_update  # local import: avoids a circular import at module load time
-
-            await broadcast_session_update(db, session)
-
-    if successfully_ingested_uids:
-        mark_seen_started = time.monotonic()
-        try:
-            await asyncio.to_thread(
-                _mark_seen_sync,
-                host=connection.imap_host,
-                port=connection.imap_port,
-                mailbox=connection.mailbox,
-                password=connection.imap_password,
-                uids=successfully_ingested_uids,
+        for item in fetched:
+            result: IngestResult = await ingest_message(db, connection=connection, message=item.message)
+            _record_recent_message(
+                connection.id,
+                uid=item.uid,
+                message=item.message,
+                decision=result.event.decision.value,
+                reason=result.event.decision_reason,
             )
-        except (OSError, imaplib.IMAP4.error):
-            # Not fatal: the watermark has already advanced above, so this
-            # is purely cosmetic for a human glancing at the mailbox --
-            # ingestion tracking doesn't depend on the \Seen flag at all.
-            logger.exception("Failed to mark %d IMAP message(s) as seen", len(successfully_ingested_uids))
-        else:
-            mark_seen_seconds = time.monotonic() - mark_seen_started
-            if mark_seen_seconds > 5:
-                logger.info(
-                    "IMAP poll mark-seen for connection %s took %.1fs (runs after the broadcast above,"
-                    " so this no longer delays the operator/public views)",
-                    connection.id,
-                    mark_seen_seconds,
+            successfully_ingested_uids.append(item.uid)
+            if (
+                not result.already_processed
+                and result.event.decision == ContributionDecision.ACCEPTED
+                and result.event.session_id is not None
+            ):
+                accepted += 1
+                sessions_to_broadcast.append(result.event.session_id)
+
+        if max_uid_seen is not None:
+            connection.imap_last_uid = max_uid_seen
+        connection.last_sync_at = utcnow()
+        connection.webhook_health = "ok"
+        await db.commit()
+
+        # Broadcast BEFORE marking \Seen, deliberately -- a real production
+        # measurement showed marking \Seen (purely cosmetic for a human
+        # glancing at the mailbox -- ingestion tracking doesn't depend on it
+        # at all) needlessly delaying the one thing that actually needs to
+        # feel instant: the operator console and public display updating
+        # the moment a real deposit is accepted. The contribution is
+        # already committed above by this point either way.
+        for session_id in sessions_to_broadcast:
+            session = await db.get(Session, session_id)
+            if session is not None:
+                from app.api.v1.sessions import broadcast_session_update  # local import: avoids a circular import at module load time
+
+                await broadcast_session_update(db, session)
+
+        if successfully_ingested_uids:
+            mark_seen_started = time.monotonic()
+            try:
+                await asyncio.to_thread(
+                    _mark_seen_on_connection_sync, imap_connection, successfully_ingested_uids
                 )
+            except (OSError, imaplib.IMAP4.error):
+                # Not fatal: the watermark has already advanced above, so
+                # this is purely cosmetic for a human glancing at the
+                # mailbox -- ingestion tracking doesn't depend on the
+                # \Seen flag at all.
+                logger.exception("Failed to mark %d IMAP message(s) as seen", len(successfully_ingested_uids))
+            else:
+                mark_seen_seconds = time.monotonic() - mark_seen_started
+                if mark_seen_seconds > 5:
+                    logger.info(
+                        "IMAP poll mark-seen for connection %s took %.1fs (reuses the fetch connection"
+                        " above -- runs after the broadcast, so this no longer delays the operator/"
+                        "public views)",
+                        connection.id,
+                        mark_seen_seconds,
+                    )
+    finally:
+        # Reuses the SAME connection _fetch_new_sync opened (see its
+        # docstring) instead of a second full connect+login+SELECT cycle --
+        # a real measurement found plain SELECT alone costing ~8s on a
+        # large mailbox, doubling the real end-to-end delay for every
+        # accepted deposit for no reason. Closed here, once, regardless of
+        # whether anything above raised.
+        await asyncio.to_thread(_logout_sync, imap_connection)
 
     if fetched:
         # The only line in this module that fires on a normal successful
