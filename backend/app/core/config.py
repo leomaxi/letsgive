@@ -11,7 +11,13 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "dev-secret-change-me-to-a-random-32-byte-value"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
+    # A church service or giving event routinely runs longer than an hour;
+    # an Owner/Media/Finance operator getting silently logged out mid-session
+    # is disruptive, not a meaningful security improvement (rotating
+    # LETSGIVE_JWT_SECRET already invalidates every outstanding token
+    # instantly if one ever needs to be revoked early). 480 = 8 hours, a full
+    # day's use without needing to sign back in.
+    access_token_expire_minutes: int = 480
 
     mfa_issuer: str = "Let's Give"
 
