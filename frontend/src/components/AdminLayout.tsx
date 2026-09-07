@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Navigate, NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/auth/AuthContext";
 import { useTheme } from "@/auth/ThemeContext";
@@ -16,15 +16,31 @@ const NAV_ITEMS = [
 ] as const;
 
 export default function AdminLayout() {
-  const { user, logout } = useAuth();
+  const { user, isLoading, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
   const unreadTicketsQuery = useQuery({
     queryKey: ["admin-tickets-unread"],
     queryFn: () => adminApi.listTickets(),
     refetchInterval: 10000,
+    // Only a real platform admin can call this without a 403 -- gated below
+    // anyway, but no reason to fire it while that's still being decided.
+    enabled: !isLoading && !!user?.is_platform_admin,
   });
   const unreadCount = unreadTicketsQuery.data?.filter((t) => t.admin_unread).length ?? 0;
+
+  // AuthContext hasn't resolved /v1/auth/me yet -- wait rather than
+  // redirecting a real admin away on a premature `user` of null.
+  if (isLoading) return null;
+
+  // The "platform admin" badge below is purely a label for this section of
+  // the app, not proof of anything -- every /v1/admin/* call is separately
+  // enforced server-side (get_platform_admin), so without this check a
+  // non-admin who lands here directly would see the full page chrome render
+  // while every list underneath silently 403s, with no explanation. Bounce
+  // them to the ordinary dashboard instead, the same way HomeRoute routes a
+  // real admin *into* this section.
+  if (!user?.is_platform_admin) return <Navigate to="/" replace />;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
