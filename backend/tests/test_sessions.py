@@ -124,6 +124,7 @@ async def test_full_session_lifecycle(
         "amount_visible",
         "contribution_count",
         "total_amount",
+        "goal_reached",
     }
 
     resp = await client.post(
@@ -133,6 +134,91 @@ async def test_full_session_lifecycle(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "ended"
+
+
+async def test_public_payload_reveals_goal_reached_even_when_amount_is_hidden(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    # Real production bug: a real deposit pushed the total past the goal,
+    # but the celebration never fired on either the operator console or the
+    # public projection page, because both needlessly re-gated an
+    # already-known "did we hit it" fact behind amount_visible -- which is
+    # only ever supposed to control whether the *exact running total* is
+    # public, not whether the binary goal-reached milestone is.
+    org, owner_token, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "goalreached"
+    )
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "organization_id": org["id"],
+            "contribution_method": "e-transfer",
+            "duration_seconds": 1800,
+            "test_mode": True,
+            "goal_enabled": True,
+            "goal_amount": "2.00",
+        },
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    session = resp.json()
+    assert session["goal_amount"] == "2.00"
+
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # amount_visible is deliberately left False (the default) -- the
+    # audience never sees the exact running total for this session.
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/simulate-deposit",
+        json={"amount": "1.00"},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/display-token", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    display_token = resp.json()["display_token"]
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/public", headers={"Authorization": f"Bearer {display_token}"}
+    )
+    public = resp.json()
+    assert public["amount_visible"] is False
+    assert public["total_amount"] is None  # exact figure still hidden
+    assert public["goal_reached"] is False  # $1.00 < $2.00 goal
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/simulate-deposit",
+        json={"amount": "1.02"},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/public", headers={"Authorization": f"Bearer {display_token}"}
+    )
+    public = resp.json()
+    # $2.02 total now clears the $2.00 goal -- reached is True even though
+    # the exact total ($2.02) stays hidden from the public payload.
+    assert public["amount_visible"] is False
+    assert public["total_amount"] is None
+    assert public["goal_reached"] is True
+
+    # The operator's own console, unlike the public payload, always carries
+    # the real total regardless of amount_visible -- it's a private view.
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    operator = resp.json()
+    assert operator["amount_visible"] is False
+    assert operator["total_amount"] == "2.02"
 
 
 async def test_owner_can_create_and_run_a_session_solo(

@@ -227,9 +227,13 @@ _PAGE = """<!doctype html>
   }
 
   function goalReached(state) {
-    if (state.goal_amount == null || !state.amount_visible || state.total_amount == null) return false;
-    if (Number(state.goal_amount) <= 0) return false;
-    return Number(state.total_amount) >= Number(state.goal_amount);
+    // Computed server-side from the real total regardless of
+    // amount_visible -- a real deposit hit a $2 goal and the celebration
+    // never fired because this used to also require the exact running
+    // total to be public. A binary "did we hit it" milestone reveals far
+    // less than the running total/progress bar does, so it's sent even
+    // when the org has chosen to keep the exact amount private.
+    return !!state.goal_reached;
   }
 
   function buildTemplateStage() {

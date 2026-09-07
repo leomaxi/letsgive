@@ -156,16 +156,23 @@ export default function SessionDetailPage() {
           {session.goal_enabled && session.goal_amount && (
             <div className="mt-2">
               {(() => {
+                // session.total_amount is always the real total on this
+                // (operator-only) payload, unlike the public projection
+                // page's -- amount_visible only ever controls what the
+                // *audience* sees, never what the operator's own console
+                // shows them privately. A real deposit hit a goal and this
+                // stayed stuck at 0% because it used to needlessly re-gate
+                // an already-real number behind that same public-facing flag.
                 const goal = Number(session.goal_amount);
-                const total = session.amount_visible && session.total_amount ? Number(session.total_amount) : 0;
-                const reached = session.amount_visible && total >= goal;
+                const total = session.total_amount ? Number(session.total_amount) : 0;
+                const reached = total >= goal;
                 const pct = goal > 0 ? Math.min(100, (total / goal) * 100) : 0;
                 return (
                   <>
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
                       <div
                         className={`h-full rounded-full ${reached ? "bg-emerald-500" : "bg-brand-500"}`}
-                        style={{ width: `${session.amount_visible ? pct : 0}%` }}
+                        style={{ width: `${pct}%` }}
                       />
                     </div>
                     <div

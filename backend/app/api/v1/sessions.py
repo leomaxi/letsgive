@@ -92,6 +92,12 @@ async def _operator_response(db: AsyncSession, session: Session) -> SessionOpera
 async def _public_payload(db: AsyncSession, session: Session) -> SessionPublicOut:
     org = await db.get(Organization, session.organization_id)
     count, total = await compute_ledger_totals(db, session.id)
+    goal_reached = (
+        session.goal_enabled
+        and session.goal_amount is not None
+        and total is not None
+        and total >= session.goal_amount
+    )
     return SessionPublicOut(
         status=session.status,
         organization_name=org.name if org else "",
@@ -100,7 +106,12 @@ async def _public_payload(db: AsyncSession, session: Session) -> SessionPublicOu
         goal_amount=session.goal_amount if session.goal_enabled else None,
         amount_visible=session.amount_visible,
         contribution_count=count,
+        # The exact running total stays private when the org has chosen to
+        # hide it, but whether the goal was actually hit is computed from
+        # the real total regardless -- see goal_reached above/below and
+        # SessionPublicOut's docstring for why that split is deliberate.
         total_amount=total if session.amount_visible else None,
+        goal_reached=goal_reached,
     )
 
 

@@ -228,6 +228,12 @@ class SessionPublicOut(BaseModel):
     amount_visible: bool
     contribution_count: int = 0
     total_amount: Decimal | None = None
+    # Computed server-side from the real total, independent of
+    # amount_visible -- a binary "did we hit it" milestone reveals far less
+    # than the running total/progress bar does, so it's shown on the public
+    # projection page even when the org has chosen to keep the exact amount
+    # private. See app/api/v1/sessions.py::_public_payload.
+    goal_reached: bool = False
 
 
 class RequestApprovalResponse(BaseModel):
