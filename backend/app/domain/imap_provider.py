@@ -33,7 +33,7 @@ class ImapAuthError(Exception):
 
 def _get_baseline_uid_sync(*, host: str, port: int, mailbox: str, password: str) -> int:
     try:
-        connection = imaplib.IMAP4_SSL(host, port, timeout=10)
+        connection = imaplib.IMAP4_SSL(host, port, timeout=20)
     except (OSError, imaplib.IMAP4.error) as exc:
         raise ImapAuthError(f"Could not reach {host}:{port} ({exc}).") from exc
 
