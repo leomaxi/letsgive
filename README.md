@@ -1352,3 +1352,29 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     fake/test-mode provider. What's confirmed is the lock, the capability-negotiation branches, and
     the watcher lifecycle; the real-world latency needs a live check against `letsgive.ca` with an
     actual connected mailbox after deploying.
+- **Two real bugs found immediately after the IDLE round above deployed**, both from watching it run
+  against production:
+  - The public projection page (`/display/{id}`) and the operator console drifted out of sync — the
+    operator console already polls every 20s specifically "in case that socket silently stalls
+    without firing onclose" (the exact comment already in that code), but the public page had no
+    such fallback at all: a single dropped WebSocket frame left it stuck on a stale count
+    indefinitely, with nothing to ever notice or correct it. Fixed by forcing a clean reconnect every
+    45s (`app/api/display_page.py`), which re-triggers the same initial-snapshot send the socket
+    already does right after subscribing — self-healing any missed frame within a bounded time,
+    same idea as the operator console's own safety net.
+  - A real production traceback (`journalctl`) showed the IDLE watcher's catch-up poll failing with a
+    MySQL connection error. Root cause: `_watch_connection` held one `AsyncSessionLocal()` session
+    open across the *entire* iteration, including the ~23-minute blocking IDLE wait — exactly the
+    shape of thing a MySQL server's own idle-connection timeout (or a proxy in front of it) kills.
+    Worse, the caught exception never rolled the session back, risking a *second* failure on the
+    session's implicit close that could silently end the watcher task for good (no more real-time
+    detection for that mailbox until the next full process restart, with nothing in the logs pointing
+    at why). Split into `_watch_connection_iteration`: its own short-lived session for the catch-up
+    poll only, closed *before* the long IDLE wait starts; an explicit `db.rollback()` after a caught
+    failure; and an outer try/except around the whole iteration matching the same "one bad cycle must
+    not kill the loop" resilience `app/main.py`'s other background loops already have. Not yet
+    covered by an automated test — this class of bug (a loop's own session-lifetime management) isn't
+    something this codebase's existing test setup can exercise without a real `AsyncSessionLocal`
+    against production-shaped data; verify via the same `journalctl | grep -i idle` check after
+    redeploying — a single recovered failure is fine, a *repeating* one or the watcher going silent
+    afterward means this fix didn't fully close it.
