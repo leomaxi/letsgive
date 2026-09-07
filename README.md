@@ -1416,3 +1416,61 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   decrease both get rejected with 409, and attempting to raise a goal on a session with no goal
   enabled at all also gets rejected with 409. Full suite (161 backend, 42 frontend) +
   lint/build all green. **Not yet deployed or tested against a real live session.**
+- **IMAP IDLE was completely unobservable — fixed, plus a real ~90-second-stuck-restart bug found
+  and fixed while digging into it.** After the session-lifetime fix above, the user reported a real
+  deposit still taking over a minute to show up, and asked what else could make detection faster. The
+  first diagnostic step (`journalctl -u letsgive-backend | grep -i idle`, across the *entire* log
+  history, not just a recent window) came back completely empty — which turned out to prove nothing
+  either way: every logger call anywhere in `imap_idle.py`/`imap_polling.py` was `logger.exception`/
+  `logger.warning` (failure paths only); a fully healthy watcher that's never once errored would
+  *always* grep to nothing. There was no way to tell from the logs whether IDLE was working, silently
+  broken, or never started at all.
+  - Fixed by adding real observability, following the exact pattern `app/domain/notifications.py`
+    already established for the same underlying problem (uvicorn's default logging config doesn't
+    attach a handler to arbitrary app loggers, so `logger.info(...)` calls silently vanish even in
+    production — only WARNING+ ever reached journalctl, via Python's own last-resort stderr
+    fallback): both `letsgive.imap` and `letsgive.imap.idle` now get their own `StreamHandler` +
+    `INFO` level at import time. New log lines: `start_all_watchers`/`start_watching`/`stop_watching`
+    announce watcher lifecycle at startup and on every connect/revoke/delete;
+    `poll_imap_connection` logs a line (connection id, fetched/accepted counts, new watermark)
+    whenever it actually finds new mail, from *any* trigger (IDLE catch-up, manual check-now, or the
+    slow fallback loop); and — the most direct answer to "is IDLE actually working" —
+    `_connect_and_idle_sync` now returns and logs one of three outcomes each time an IDLE wait ends:
+    `"pushed"` (the server itself notified us before the ~23-minute timeout — the fast path is
+    working), `"timed_out"` (nothing arrived; the wait just elapsed), or `"not_supported"` (this
+    mailbox falls back to plain polling). A string of `timed_out` entries for a mailbox that should
+    be receiving mail would mean IDLE negotiated fine but real pushes aren't arriving — something
+    this session had no way to distinguish before.
+  - **While tracing why the grep came back empty, a second, real, previously-undiagnosed bug turned
+    up in the same journalctl excerpt the user pasted**: the backend service had restarted twice in
+    that 30-minute window, and *both* restarts show the exact same pattern — "Shutting down" /
+    "Waiting for background tasks to complete" immediately followed by systemd's stop-sigterm timing
+    out ~90 seconds later and SIGKILLing the process. Root cause: `app/main.py`'s lifespan shutdown
+    calls `task.cancel()` on each IDLE watcher, but if a watcher is mid-IDLE-wait, its blocking work
+    is actually running in a separate OS thread (`asyncio.to_thread` wrapping the real socket read) —
+    asyncio's cooperative cancellation cannot preempt a blocking thread; the process's own
+    "cancel all remaining tasks and wait for them" cleanup step then has no choice but to sit there
+    until that thread naturally returns, which can take up to `_IDLE_TIMEOUT_SECONDS` (~23 minutes).
+    Every restart during an active IDLE wait meant a ~90-second total service outage ending in an
+    unclean SIGKILL rather than a clean shutdown — and, notably, a real deposit email landing during
+    that exact window would explain a "took over a minute" report on its own, with no bug in IDLE's
+    actual detection logic at all: nothing is running to catch it until the next process's startup
+    sweep does its immediate catch-up poll. Fixed with `_force_disconnect` (`imap_idle.py`): the live
+    `IMAPClient` for each in-progress IDLE wait is registered in `_active_clients` while blocked, and
+    `stop_watching`/`stop_all_watchers` now call `client.shutdown()` on it — a documented,
+    thread-safe way to force-close the underlying socket from a different thread than the one blocked
+    reading it — so the blocked thread returns in milliseconds instead of up to 23 minutes. Regression
+    tested the disciplined way: reverted the `_force_disconnect(connection_id)` call from
+    `stop_watching`, confirmed the new test (`test_stop_watching_force_disconnects_a_mid_idle_client`)
+    fails with `shutdown` never called, restored, confirmed green.
+  - 6 new/updated backend tests in `test_imap_idle.py` covering the three IDLE outcomes, the
+    `_active_clients` registration/deregistration lifecycle, `_force_disconnect`'s no-op-on-unknown-
+    connection and swallow-already-closed-socket-error behavior, and `stop_watching` actually calling
+    it. Full suite (167 backend) green.
+  - **Still not confirmed live**: whether this explains the user's specific "still slow" report is
+    genuinely unknown — it depends on whether that deposit happened to arrive during one of these
+    restart windows, which isn't something the pasted logs alone can confirm. Next step once this is
+    deployed: a clean (non-restart-adjacent) real-mailbox test, then
+    `journalctl -u letsgive-backend --since "X min ago" | grep -iE "idle|imap poll"` — this will now
+    actually show something, letting the `"pushed"` vs `"timed_out"` outcomes and poll-fetch
+    timestamps be compared directly against when the email actually landed.

@@ -22,6 +22,17 @@ from app.domain.ingestion import IngestResult, ingest_message
 from app.domain.mailbox_providers import RawMessage
 
 logger = logging.getLogger("letsgive.imap")
+# uvicorn's default logging config doesn't attach a handler to arbitrary app
+# loggers, so INFO messages would silently vanish both in local dev and in
+# production (the only reason exception/warning-level logs from this module
+# have ever been visible in journalctl is Python's WARNING+-only last-resort
+# fallback handler) -- same fix already used in app/domain/notifications.py.
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 # Every trigger that can fetch a given connection -- the manual "check now"
 # button, the IDLE-triggered catch-up (app/domain/imap_idle.py), and the
@@ -376,6 +387,20 @@ async def _poll_imap_connection_locked(
             from app.api.v1.sessions import broadcast_session_update  # local import: avoids a circular import at module load time
 
             await broadcast_session_update(db, session)
+
+    if fetched:
+        # The only line in this module that fires on a normal successful
+        # poll rather than an error -- lets a timestamp here be compared
+        # against when a deposit email actually landed in the mailbox, to
+        # tell whether a slow-to-appear contribution was a slow poll/IDLE
+        # trigger vs. something downstream of ingestion.
+        logger.info(
+            "IMAP poll for connection %s: fetched=%d accepted=%d new_last_uid=%s",
+            connection.id,
+            len(fetched),
+            accepted,
+            connection.imap_last_uid,
+        )
 
     return ImapPollSummary(fetched=len(fetched), accepted=accepted)
 

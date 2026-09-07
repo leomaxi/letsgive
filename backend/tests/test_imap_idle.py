@@ -72,21 +72,38 @@ async def test_poll_imap_connection_serializes_concurrent_calls_for_the_same_con
 # --- _connect_and_idle_sync's IDLE-vs-fallback branch ------------------------
 
 
-def test_connect_and_idle_sync_idles_when_the_server_supports_it():
+def test_connect_and_idle_sync_reports_a_real_push_when_the_server_sends_one():
     client_mock = MagicMock()
     client_mock.has_capability.return_value = True
+    client_mock.idle_check.return_value = [(b"3", b"EXISTS")]
     with patch("app.domain.imap_idle.IMAPClient", return_value=client_mock):
         result = _connect_and_idle_sync(
-            host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", timeout=5
+            connection_id="conn-push", host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", timeout=5
         )
 
-    assert result is True
+    assert result == "pushed"
+    # Deregistered from _active_clients once the wait ends -- otherwise a
+    # later _force_disconnect for this connection id would try to shut down
+    # a socket that's already been logged out and closed.
+    assert "conn-push" not in imap_idle._active_clients
     client_mock.login.assert_called_once_with("a@gmail.com", "pw")
     client_mock.select_folder.assert_called_once_with("INBOX")
     client_mock.idle.assert_called_once()
     client_mock.idle_check.assert_called_once_with(timeout=5)
     client_mock.idle_done.assert_called_once()
     client_mock.logout.assert_called_once()
+
+
+def test_connect_and_idle_sync_reports_a_timeout_when_the_server_sends_nothing():
+    client_mock = MagicMock()
+    client_mock.has_capability.return_value = True
+    client_mock.idle_check.return_value = []
+    with patch("app.domain.imap_idle.IMAPClient", return_value=client_mock):
+        result = _connect_and_idle_sync(
+            connection_id="conn-timeout", host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="pw", timeout=5
+        )
+
+    assert result == "timed_out"
 
 
 def test_connect_and_idle_sync_falls_back_when_the_server_lacks_idle():
@@ -97,13 +114,74 @@ def test_connect_and_idle_sync_falls_back_when_the_server_lacks_idle():
     client_mock.has_capability.return_value = False
     with patch("app.domain.imap_idle.IMAPClient", return_value=client_mock):
         result = _connect_and_idle_sync(
-            host="imap.example.com", port=993, mailbox="a@example.com", password="pw", timeout=5
+            connection_id="conn-nosupport",
+            host="imap.example.com",
+            port=993,
+            mailbox="a@example.com",
+            password="pw",
+            timeout=5,
         )
 
-    assert result is False
+    assert result == "not_supported"
     client_mock.idle.assert_not_called()
     client_mock.idle_check.assert_not_called()
     client_mock.logout.assert_called_once()
+
+
+def test_connect_and_idle_sync_registers_itself_for_force_disconnect_while_idling():
+    # _force_disconnect (called by stop_watching/stop_all_watchers, e.g. on
+    # process shutdown) needs to find the live client while it's blocked in
+    # idle_check -- registered right before that call, deregistered right
+    # after, so a stray _force_disconnect call outside that window is a
+    # harmless no-op rather than shutting down a socket someone else is
+    # using.
+    seen_during_idle = {}
+
+    client_mock = MagicMock()
+    client_mock.has_capability.return_value = True
+
+    def fake_idle_check(timeout):
+        seen_during_idle["client"] = imap_idle._active_clients.get("conn-registered")
+        return []
+
+    client_mock.idle_check.side_effect = fake_idle_check
+    with patch("app.domain.imap_idle.IMAPClient", return_value=client_mock):
+        _connect_and_idle_sync(
+            connection_id="conn-registered",
+            host="imap.gmail.com",
+            port=993,
+            mailbox="a@gmail.com",
+            password="pw",
+            timeout=5,
+        )
+
+    assert seen_during_idle["client"] is client_mock
+    assert "conn-registered" not in imap_idle._active_clients
+
+
+def test_force_disconnect_shuts_down_a_registered_clients_socket():
+    client_mock = MagicMock()
+    imap_idle._active_clients["conn-force"] = client_mock
+    try:
+        imap_idle._force_disconnect("conn-force")
+    finally:
+        imap_idle._active_clients.pop("conn-force", None)
+
+    client_mock.shutdown.assert_called_once()
+
+
+def test_force_disconnect_for_an_unregistered_connection_is_a_safe_no_op():
+    imap_idle._force_disconnect("no-such-connection")
+
+
+def test_force_disconnect_swallows_errors_from_an_already_closed_socket():
+    client_mock = MagicMock()
+    client_mock.shutdown.side_effect = OSError("socket already closed")
+    imap_idle._active_clients["conn-already-closed"] = client_mock
+    try:
+        imap_idle._force_disconnect("conn-already-closed")  # must not raise
+    finally:
+        imap_idle._active_clients.pop("conn-already-closed", None)
 
 
 # --- watcher task registry ---------------------------------------------------
@@ -132,6 +210,27 @@ async def test_stop_watching_cancels_and_removes_a_registered_task():
     assert "fake-connection-id" not in imap_idle._watchers
     await asyncio.sleep(0)  # let the cancellation actually land
     assert task.cancelled()
+
+
+async def test_stop_watching_force_disconnects_a_mid_idle_client():
+    # Real production bug: cancelling this task alone doesn't stop it -- the
+    # actual blocking work happens in a separate OS thread (asyncio.to_thread)
+    # that asyncio's cooperative cancellation can't preempt. A `systemctl
+    # restart` while a mailbox was mid-IDLE-wait left the process stuck in
+    # "Waiting for background tasks to complete" for the full ~90s systemd
+    # stop timeout before being SIGKILLed. stop_watching must also force-close
+    # the socket so the blocked thread actually returns promptly.
+    async def _never_finishes():
+        await asyncio.sleep(100)
+
+    client_mock = MagicMock()
+    task = asyncio.create_task(_never_finishes())
+    imap_idle._watchers["fake-mid-idle-connection"] = task
+    imap_idle._active_clients["fake-mid-idle-connection"] = client_mock
+
+    imap_idle.stop_watching("fake-mid-idle-connection")
+
+    client_mock.shutdown.assert_called_once()
 
 
 async def test_stop_watching_an_unknown_connection_is_a_safe_no_op():

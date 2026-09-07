@@ -11,6 +11,20 @@ from app.db.session import AsyncSessionLocal
 from app.domain.imap_polling import poll_imap_connection
 
 logger = logging.getLogger("letsgive.imap.idle")
+# uvicorn's default logging config doesn't attach a handler to arbitrary app
+# loggers, so INFO messages would silently vanish in journalctl -- same fix
+# already used in app/domain/notifications.py and app/domain/imap_polling.py.
+# This logger is a *child* of "letsgive.imap" (imap_polling.py's logger name)
+# but still needs its own handler here: imap_polling.py's own fix sets
+# propagate=False on its logger, which only stops that logger's own records
+# from bubbling further up -- it does nothing for a sibling/child logger's
+# records, which still need somewhere to go.
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 # How long a single IDLE wait blocks before this task refreshes it on its
 # own, comfortably under the ~29-minute RFC 2177-recommended renewal window
@@ -34,6 +48,40 @@ _ERROR_BACKOFF_SECONDS = 30
 # exactly one worker, or move it to a real task queue.
 _watchers: dict[str, asyncio.Task] = {}
 
+# The IMAPClient currently blocked in idle_check() for each connection, if
+# any -- registered/unregistered by _connect_and_idle_sync, which runs in a
+# worker thread (asyncio.to_thread). Plain dict set/pop item access is
+# already how _watchers above is shared across the event loop without an
+# explicit lock; the GIL makes a single dict item assignment/deletion atomic
+# enough for that, and this follows the same pattern. Lets stop_watching /
+# stop_all_watchers force-unblock a socket read that could otherwise block
+# for up to _IDLE_TIMEOUT_SECONDS (~23 minutes) -- see _force_disconnect.
+_active_clients: dict[str, IMAPClient] = {}
+
+
+def _force_disconnect(connection_id: str) -> None:
+    """Force-closes the socket of a connection's in-progress IDLE wait, if
+    any, so a cancelled watcher task actually stops promptly instead of
+    asyncio.to_thread's underlying worker thread running the blocking
+    idle_check() call to completion regardless of the cancellation --
+    asyncio can't interrupt a real OS thread blocked in a socket read.
+
+    This isn't a hypothetical: without it, a `systemctl restart` issued
+    while a mailbox was mid-IDLE-wait made uvicorn's graceful shutdown sit
+    in "Waiting for background tasks to complete" until systemd's stop
+    timeout elapsed and SIGKILLed the process -- observed in production as
+    two ~90-second stuck restarts back to back. IMAPClient.shutdown() calls
+    the underlying socket's shutdown(SHUT_RDWR), which is safe to call from
+    a different thread than the one blocked reading it -- a standard way to
+    unblock a stuck socket read.
+    """
+    client = _active_clients.get(connection_id)
+    if client is not None:
+        try:
+            client.shutdown()
+        except Exception:  # noqa: BLE001 -- best-effort; the read it unblocks handles the rest
+            pass
+
 
 def start_watching(connection_id: str) -> None:
     """No-op if already watching this connection -- safe to call from
@@ -54,12 +102,15 @@ def start_watching(connection_id: str) -> None:
     if existing is not None and not existing.done():
         return
     _watchers[connection_id] = asyncio.create_task(_watch_connection(connection_id))
+    logger.info("Started IMAP IDLE watcher for connection %s", connection_id)
 
 
 def stop_watching(connection_id: str) -> None:
     task = _watchers.pop(connection_id, None)
     if task is not None:
         task.cancel()
+        _force_disconnect(connection_id)
+        logger.info("Stopped IMAP IDLE watcher for connection %s", connection_id)
 
 
 def stop_all_watchers() -> None:
@@ -78,33 +129,52 @@ async def start_all_watchers(db: AsyncSession) -> None:
             MailboxConnection.status == ConnectionStatus.CONNECTED,
         )
     )
-    for connection in result.scalars().all():
+    connections = result.scalars().all()
+    for connection in connections:
         start_watching(connection.id)
+    logger.info("IMAP IDLE startup sweep: watching %d connection(s)", len(connections))
 
 
 def _connect_and_idle_sync(
-    *, host: str, port: int, mailbox: str, password: str, timeout: int
-) -> bool:
+    *, connection_id: str, host: str, port: int, mailbox: str, password: str, timeout: int
+) -> str:
     """Blocking: connects, logs in, selects INBOX, and either idles for up
-    to `timeout` seconds -- returning True the moment that ends, whether
-    because the server actually pushed a notification or because the
-    timeout simply elapsed, since the caller's next step is identical
-    either way -- or, if this server doesn't support IDLE at all, returns
-    False immediately so the caller falls back to a plain sleep-and-repoll
+    to `timeout` seconds or, if this server doesn't support IDLE at all,
+    returns immediately so the caller falls back to a plain sleep-and-repoll
     cadence for this mailbox instead.
+
+    Returns one of:
+    - "not_supported": no IDLE capability; caller falls back to polling.
+    - "pushed": the server sent something (almost always new mail) before
+      `timeout` elapsed.
+    - "timed_out": `timeout` elapsed with no server activity at all.
+
+    The caller's next step (a catch-up poll, then re-idle) is identical for
+    "pushed" and "timed_out" either way, but the distinction is logged --
+    it's the only way to tell from the logs whether real push notifications
+    are actually arriving or this mailbox is quietly relying on the
+    ~23-minute timeout the whole time.
+
+    Registers itself in _active_clients for the duration of the IDLE wait so
+    _force_disconnect (called from the event loop thread, e.g. on shutdown)
+    can force-close the socket to unblock this thread promptly instead of
+    leaving it running for up to `timeout` seconds regardless of
+    cancellation.
     """
     client = IMAPClient(host, port=port, ssl=True, timeout=15)
     try:
         client.login(mailbox, password)
         client.select_folder("INBOX")
         if not client.has_capability("IDLE"):
-            return False
+            return "not_supported"
         client.idle()
+        _active_clients[connection_id] = client
         try:
-            client.idle_check(timeout=timeout)
+            responses = client.idle_check(timeout=timeout)
         finally:
+            _active_clients.pop(connection_id, None)
             client.idle_done()
-        return True
+        return "pushed" if responses else "timed_out"
     finally:
         try:
             client.logout()
@@ -178,8 +248,9 @@ async def _watch_connection_iteration(connection_id: str) -> bool:
     # with a "server has gone away"-style error instead of a clean
     # reconnect -- a real production failure this split fixes.
     try:
-        idle_supported = await asyncio.to_thread(
+        idle_outcome = await asyncio.to_thread(
             _connect_and_idle_sync,
+            connection_id=connection_id,
             host=host,
             port=port,
             mailbox=mailbox,
@@ -196,6 +267,14 @@ async def _watch_connection_iteration(connection_id: str) -> bool:
         await asyncio.sleep(_ERROR_BACKOFF_SECONDS)
         return False
 
-    if not idle_supported:
+    # The one line that actually answers "is IDLE working" -- "pushed" means
+    # the server itself notified us before the ~23-minute timeout; a string
+    # of "timed_out" entries for a mailbox that should be receiving mail
+    # means real push notifications aren't arriving even though IDLE was
+    # negotiated, and new mail is only ever being caught by the next
+    # re-poll-on-timeout cycle or the slow app/main.py fallback loop.
+    logger.info("IMAP IDLE wait for %s ended: %s", connection_id, idle_outcome)
+
+    if idle_outcome == "not_supported":
         await asyncio.sleep(_NO_IDLE_POLL_SECONDS)
     return False
