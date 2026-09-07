@@ -1383,3 +1383,17 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   operator getting silently logged out mid-session was disruptive with no real security upside
   (`LETSGIVE_JWT_SECRET` rotation already invalidates every outstanding token instantly if one ever
   needs revoking early).
+- **The goal-reached celebration didn't fire** for a real session where the total ($2.02) cleared the
+  goal ($2.00) — a real deposit, confirmed live. Root cause: both the public projection page and the
+  operator console needlessly re-gated the *binary* "did we hit it" fact behind `amount_visible`,
+  which is only meant to control whether the *exact running total* is public. `SessionPublicOut`
+  (`app/api/v1/schemas.py`/`app/api/v1/sessions.py::_public_payload`) gains a `goal_reached` field
+  computed server-side from the real total regardless of `amount_visible` — the precise figure stays
+  hidden, only the milestone fact is revealed. Separately, the operator console
+  (`SessionDetailPage.tsx`) turned out to have its own, unrelated instance of the same mistake:
+  `session.total_amount` on the *operator's own* payload was already the real number regardless of
+  `amount_visible` (that flag only ever governs what the public sees) — the frontend had copied the
+  public page's gating onto an already-private view for no reason, zeroing out its own progress bar.
+  Regression-tested the disciplined way: reverted the backend fix, confirmed the new test reproduces
+  the exact production symptom (`goal_reached` stuck `False` despite the total clearing the goal),
+  restored, confirmed green. Full suite (159 backend, 42 frontend) + typecheck/lint/build all green.
