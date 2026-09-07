@@ -27,7 +27,13 @@ vi.mock("@/pages/OrgHomePage", () => ({
   default: () => <div>ORG HOME STUB</div>,
 }));
 
-const USER: User = { id: "u1", email: "a@example.org", full_name: "A", mfa_enabled: true };
+const USER: User = {
+  id: "u1",
+  email: "a@example.org",
+  full_name: "A",
+  mfa_enabled: true,
+  is_platform_admin: false,
+};
 
 function makeOrg(overrides: Partial<MyOrganization> = {}): MyOrganization {
   return {

@@ -23,4 +23,9 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     mfa_secret: Mapped[str | None] = mapped_column(EncryptedString(500))
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Platform-staff flag, unrelated to any per-org Membership.role -- grants
+    # cross-tenant access via app/api/v1/admin.py (see get_platform_admin in
+    # app/api/v1/deps.py). No self-service way to set this; DB-only, by design.
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     memberships: Mapped[list["Membership"]] = relationship(back_populates="user")

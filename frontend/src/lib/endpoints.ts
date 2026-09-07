@@ -1,5 +1,9 @@
 import { api } from "./api";
 import type {
+  AdminOrganization,
+  AdminOrganizationDetail,
+  AdminSupportTicket,
+  AdminSupportTicketDetail,
   AuditLogEntry,
   ContributionEvent,
   DisplayTemplate,
@@ -26,6 +30,10 @@ import type {
   SessionOperator,
   SessionReport,
   SessionStatus,
+  SubscriptionStatus,
+  SupportTicket,
+  SupportTicketDetail,
+  SupportTicketStatus,
   TokenResponse,
   User,
 } from "./types";
@@ -324,4 +332,60 @@ export const displayTemplateApi = {
 export const auditApi = {
   listForOrg: (orgId: string, limit = 100) =>
     api.get<AuditLogEntry[]>(`/v1/organizations/${orgId}/audit-logs?limit=${limit}`),
+};
+
+export const supportTicketApi = {
+  listForOrg: (orgId: string) =>
+    api.get<SupportTicket[]>(`/v1/organizations/${orgId}/support-tickets`),
+
+  create: (orgId: string, subject: string, body: string) =>
+    api.post<SupportTicketDetail>(`/v1/organizations/${orgId}/support-tickets`, { subject, body }),
+
+  get: (orgId: string, ticketId: string) =>
+    api.get<SupportTicketDetail>(`/v1/organizations/${orgId}/support-tickets/${ticketId}`),
+
+  reply: (orgId: string, ticketId: string, body: string) =>
+    api.post(`/v1/organizations/${orgId}/support-tickets/${ticketId}/messages`, { body }),
+};
+
+export interface AdminSubscriptionUpdatePayload {
+  plan_id?: string;
+  subscription_status?: SubscriptionStatus;
+}
+
+export const adminApi = {
+  listOrganizations: (limit = 50, offset = 0, search?: string) =>
+    api.get<AdminOrganization[]>(
+      `/v1/admin/organizations?limit=${limit}&offset=${offset}${
+        search ? `&search=${encodeURIComponent(search)}` : ""
+      }`
+    ),
+
+  getOrganization: (orgId: string) =>
+    api.get<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}`),
+
+  updateSubscription: (orgId: string, payload: AdminSubscriptionUpdatePayload) =>
+    api.post<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}/subscription`, payload),
+
+  listTickets: (status?: SupportTicketStatus, organizationId?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (organizationId) params.set("organization_id", organizationId);
+    const qs = params.toString();
+    return api.get<AdminSupportTicket[]>(`/v1/admin/tickets${qs ? `?${qs}` : ""}`);
+  },
+
+  getTicket: (ticketId: string) =>
+    api.get<AdminSupportTicketDetail>(`/v1/admin/tickets/${ticketId}`),
+
+  replyToTicket: (ticketId: string, body: string) =>
+    api.post(`/v1/admin/tickets/${ticketId}/messages`, { body }),
+
+  setTicketStatus: (ticketId: string, status: SupportTicketStatus) =>
+    api.post<AdminSupportTicket>(`/v1/admin/tickets/${ticketId}/status`, { status }),
+
+  listAuditLogs: (organizationId?: string, limit = 100) =>
+    api.get<AuditLogEntry[]>(
+      `/v1/admin/audit-logs?limit=${limit}${organizationId ? `&organization_id=${organizationId}` : ""}`
+    ),
 };

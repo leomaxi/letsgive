@@ -18,6 +18,13 @@ class Role(str, enum.Enum):
     FINANCE = "finance"
     MEDIA = "media"
     AUDITOR = "auditor"
+    # Unused/unwired since the initial migration -- an org-scoped Membership
+    # role is the wrong shape for real platform-admin access (which needs to
+    # be global, not per-org). See User.is_platform_admin + get_platform_admin
+    # in app/api/v1/deps.py for the actual platform-admin mechanism. Left in
+    # place rather than removed: dropping an enum label needs its own
+    # dialect-specific migration branch (see migration 0008) for zero
+    # functional benefit, since nothing ever assigns this value.
     SYSTEM_ADMIN = "system_admin"
 
 

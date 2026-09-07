@@ -15,6 +15,8 @@ from app.db.models.reconciliation_item import (
     ReconciliationStatus,
 )
 from app.db.models.session import ALLOWED_TRANSITIONS, Session, SessionStatus
+from app.db.models.support_ticket import SupportTicket, SupportTicketStatus
+from app.db.models.support_ticket_message import SupportTicketMessage
 from app.db.models.user import User
 
 __all__ = [
@@ -46,5 +48,8 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "Session",
     "SessionStatus",
+    "SupportTicket",
+    "SupportTicketStatus",
+    "SupportTicketMessage",
     "User",
 ]

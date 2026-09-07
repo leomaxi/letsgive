@@ -68,6 +68,19 @@ async def get_membership(
     return membership
 
 
+async def get_platform_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Gate for app/api/v1/admin.py -- cross-tenant routes with no single
+    organization_id in their path, so there's no tenant-existence secrecy
+    concern the way get_membership's 404 protects; a plain 403 is correct.
+    """
+    if not current_user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform admin access required.",
+        )
+    return current_user
+
+
 async def get_session_membership(
     session_id: str = Path(...),
     current_user: User = Depends(get_current_user),

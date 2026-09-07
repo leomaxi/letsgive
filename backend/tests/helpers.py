@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.mailbox_connection import MailboxConnection
 from app.db.models.membership import Membership, MembershipStatus
+from app.db.models.user import User
 from app.domain.mailbox_providers import RawMessage, get_fake_provider, sign_webhook_body
 
 
@@ -84,6 +85,17 @@ async def add_active_member(
     await db_session.commit()
 
     return token
+
+
+async def make_platform_admin(db_session: AsyncSession, user_id: str) -> None:
+    """No self-service way to grant this in the real app, by design -- tests
+    reach into the DB directly, same as add_active_member does for
+    membership status.
+    """
+    result = await db_session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one()
+    user.is_platform_admin = True
+    await db_session.commit()
 
 
 async def create_session(

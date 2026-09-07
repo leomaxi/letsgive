@@ -7,6 +7,7 @@ export interface User {
   email: string;
   full_name: string;
   mfa_enabled: boolean;
+  is_platform_admin: boolean;
 }
 
 export interface TokenResponse {
@@ -48,7 +49,7 @@ export interface Invitation {
   created_at: string;
 }
 
-export type NotificationType = "approval_code";
+export type NotificationType = "approval_code" | "support_reply";
 
 export interface Notification {
   id: string;
@@ -322,4 +323,55 @@ export interface AuditLogEntry {
   after: Record<string, unknown> | null;
   ip_address: string | null;
   created_at: string;
+}
+
+export type SupportTicketStatus = "open" | "in_progress" | "resolved" | "closed";
+
+export interface SupportTicketMessage {
+  id: string;
+  ticket_id: string;
+  author_user_id: string;
+  author_is_admin: boolean;
+  body: string;
+  created_at: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  organization_id: string;
+  created_by_user_id: string;
+  subject: string;
+  status: SupportTicketStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SupportTicketDetail extends SupportTicket {
+  messages: SupportTicketMessage[];
+}
+
+export interface AdminSupportTicket extends SupportTicket {
+  organization_name: string;
+  admin_unread: boolean;
+}
+
+export interface AdminSupportTicketDetail extends AdminSupportTicket {
+  messages: SupportTicketMessage[];
+}
+
+export interface AdminOrganization {
+  id: string;
+  name: string;
+  plan_id: string | null;
+  plan_key: string | null;
+  plan_name: string | null;
+  subscription_status: SubscriptionStatus;
+  member_count: number;
+  created_at: string;
+}
+
+export interface AdminOrganizationDetail extends AdminOrganization {
+  grace_period_ends_at: string | null;
+  connections_total: number;
+  connections_connected: number;
 }

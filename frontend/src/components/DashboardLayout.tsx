@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: "/display-studio", label: "Display Studio", end: false, roles: null },
   { to: "/reconciliation", label: "Reconciliation", end: false, roles: null },
   { to: "/audit", label: "Audit log", end: false, roles: null },
+  { to: "/support", label: "Support", end: false, roles: null },
   { to: "/billing", label: "Billing", end: false, roles: ["owner", "finance"] },
 ] as const;
 

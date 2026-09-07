@@ -25,8 +25,20 @@ vi.mock("@/lib/endpoints", async (importOriginal) => {
   };
 });
 
-const USER_A: User = { id: "u1", email: "a@example.org", full_name: "A", mfa_enabled: true };
-const USER_B: User = { id: "u2", email: "b@example.org", full_name: "B", mfa_enabled: false };
+const USER_A: User = {
+  id: "u1",
+  email: "a@example.org",
+  full_name: "A",
+  mfa_enabled: true,
+  is_platform_admin: false,
+};
+const USER_B: User = {
+  id: "u2",
+  email: "b@example.org",
+  full_name: "B",
+  mfa_enabled: false,
+  is_platform_admin: false,
+};
 
 function Probe() {
   const { user, login } = useAuth();

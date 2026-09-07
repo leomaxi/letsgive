@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.db.models.contribution_event import ContributionDecision
 from app.db.models.display_template import ElementType
@@ -12,6 +12,7 @@ from app.db.models.notification import NotificationType
 from app.db.models.organization import SubscriptionStatus
 from app.db.models.reconciliation_item import ReconciliationResolution, ReconciliationStatus
 from app.db.models.session import SessionStatus
+from app.db.models.support_ticket import SupportTicketStatus
 
 
 class UserRegisterRequest(BaseModel):
@@ -25,6 +26,7 @@ class UserOut(BaseModel):
     email: EmailStr
     full_name: str
     mfa_enabled: bool
+    is_platform_admin: bool
 
     model_config = {"from_attributes": True}
 
@@ -499,3 +501,90 @@ class AuditLogOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- Support tickets (tenant-facing: app/api/v1/support.py) -----------------
+
+
+class SupportTicketCreateRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class SupportTicketMessageCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class SupportTicketMessageOut(BaseModel):
+    id: str
+    ticket_id: str
+    author_user_id: str
+    author_is_admin: bool
+    body: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SupportTicketOut(BaseModel):
+    id: str
+    organization_id: str
+    created_by_user_id: str
+    subject: str
+    status: SupportTicketStatus
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SupportTicketDetailOut(SupportTicketOut):
+    messages: list[SupportTicketMessageOut]
+
+
+# --- Platform admin (app/api/v1/admin.py) ------------------------------------
+
+
+class AdminOrganizationOut(BaseModel):
+    id: str
+    name: str
+    plan_id: str | None
+    plan_key: str | None
+    plan_name: str | None
+    subscription_status: SubscriptionStatus
+    member_count: int
+    created_at: datetime
+
+
+class AdminOrganizationDetailOut(AdminOrganizationOut):
+    grace_period_ends_at: datetime | None
+    connections_total: int
+    connections_connected: int
+
+
+class AdminSubscriptionUpdateRequest(BaseModel):
+    plan_id: str | None = None
+    subscription_status: SubscriptionStatus | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_field(self) -> "AdminSubscriptionUpdateRequest":
+        # field_validator wouldn't run at all if both fields are simply
+        # omitted (left at their None defaults) -- this needs a model-level
+        # check so an all-empty request (which would silently no-op) is
+        # rejected outright instead.
+        if self.plan_id is None and self.subscription_status is None:
+            raise ValueError("Provide at least one of plan_id or subscription_status.")
+        return self
+
+
+class AdminSupportTicketOut(SupportTicketOut):
+    organization_name: str
+    admin_unread: bool
+
+
+class AdminSupportTicketDetailOut(AdminSupportTicketOut):
+    messages: list[SupportTicketMessageOut]
+
+
+class SupportTicketStatusUpdateRequest(BaseModel):
+    status: SupportTicketStatus

@@ -1192,3 +1192,61 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   password created" security-alert emails) treat a fresh login as a security-relevant event, not a
   free API call. `POST .../connections/{id}/check-now` remains for on-demand instant checks
   regardless of this interval.
+- **Added a platform/system admin portal** — the first genuinely cross-tenant capability in this
+  codebase. Every prior authorization check in this app resolves permissions from an
+  `organization_id` in the request path (`Membership.role` via `get_membership`); a platform admin
+  by definition isn't scoped to any one org, so this needed a new, parallel mechanism rather than
+  reusing that pattern:
+  - `User.is_platform_admin` (migration `0014`) — a plain global boolean, not a `Membership` row.
+    Deliberately **not** the existing-but-completely-unwired `Role.SYSTEM_ADMIN` enum value (left in
+    `membership.py` with a comment explaining why, unrelated to this feature): that's a per-org
+    `Membership.role`, the wrong shape for something that has to work across every tenant at once.
+    Checked fresh from the DB on every admin-route request via a new `get_platform_admin` dependency
+    (`app/api/v1/deps.py`) — same "resolve permission fresh, never trust the JWT for it" pattern
+    `get_membership` already uses; the JWT itself still only ever carries `sub=user_id`, unchanged.
+    No self-service way to grant this — DB-only, on purpose. Platform staff log in through the exact
+    same `/login` page and `POST /v1/auth/login` as every tenant user (MFA still enforced the same
+    way); `HomeRoute` (`frontend/src/App.tsx`) now checks `user.is_platform_admin` first and routes
+    straight to `/admin/organizations` instead of the usual "create your first org" prompt a
+    zero-membership account would otherwise hit.
+  - `GET /v1/admin/organizations` (paginated, searchable — the first `limit`/`offset` pagination
+    this codebase has needed, every earlier list endpoint just took a plain `limit`) and `GET
+    .../organizations/{id}` for cross-tenant visibility; `POST .../organizations/{id}/subscription`
+    for a manual plan/subscription-status override. Deliberately **bypasses** the tenant
+    self-service `switch_plan`'s block on a `CANCELED` subscription (that endpoint's own error
+    message already says "contact support to reactivate" — this is that path) — `plan_id` and
+    `subscription_status` are independent optional fields on the request (at least one required) so
+    reactivating a canceled org is a deliberate admin choice, never an accidental side effect of
+    just changing the plan.
+  - A real support-ticket system: `SupportTicket`/`SupportTicketMessage` (migration `0014`), tenant
+    side at `POST/GET /v1/organizations/{id}/support-tickets[/​{ticket_id}/messages]` (any active
+    member, not just Owner — asking for help isn't a destructive or financial action, same reasoning
+    as this app's existing team-wide read access to audit logs/mailbox config), admin side at
+    `/v1/admin/tickets...`. **Deliberately not real-time/WebSocket** — both sides poll every ~10s,
+    the same pattern `NotificationsBell` already uses (`refetchInterval`). This app's WebSocket
+    pub/sub (`app/domain/realtime.py`) is explicitly in-process/single-server only (`DEPLOYMENT.md`
+    already forbids more than one Uvicorn worker because of it); a support-ticket thread isn't worth
+    deepening that constraint. A tenant reply notifies admin via a plain `admin_unread` boolean on
+    the ticket (cleared when an admin views or replies) — no second notification table for a handful
+    of staff accounts. An admin reply notifies the tenant via the *existing* `Notification`/
+    `NotificationsBell` mechanism verbatim, with one new `NotificationType.SUPPORT_REPLY` member.
+  - Admin actions reuse the existing `AuditLog`/`record_audit_event` exactly as-is (its
+    `organization_id`/`actor_user_id` columns were already independent nullable FKs with no
+    cross-constraint) — `actor_user_id=<admin>`, `organization_id=<target tenant>`. The tenant's own
+    pre-existing `GET .../audit-logs` needed **zero code change** to start showing admin actions
+    against their org; it already just filters by `organization_id`. Verified live: an admin's
+    `platform_admin.subscription_changed` and `platform_admin.ticket_replied` entries both appeared
+    correctly on the tenant's own audit log page with no code touching that endpoint at all.
+  - Frontend: a separate `AdminLayout`/`/admin/*` route tree (own nav, no org switcher, no
+    `NotificationsBell` — an unread-ticket-count badge instead), sibling to the existing
+    `DashboardLayout` tree, both still under the one shared `RequireAuth` gate. New tenant-facing
+    `/support` + `/support/:ticketId` pages alongside `/audit`/`/billing`.
+  - **Verified live end-to-end in a real three-account browser session**: a platform-admin account
+    (flipped via direct DB access, no UI for it) landed at `/admin/organizations` on login and saw
+    both seeded tenant orgs; opened and replied to a real tenant-submitted ticket (admin_unread
+    toggled correctly both directions); changed a canceled-then-reactivated org's plan bypassing the
+    tenant-side block. Switching to the tenant account: the notification bell showed the admin's
+    reply with no clipping/positioning issues, `/support` showed the full threaded conversation,
+    `/billing` reflected the new plan, and `/audit` showed both admin actions attributed correctly —
+    all with zero manual data wiring beyond the one `is_platform_admin` flag flip. 17 new backend
+    tests; full suite (146 backend, 42 frontend) + typecheck/lint/build all green.

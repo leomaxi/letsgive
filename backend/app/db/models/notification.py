@@ -10,6 +10,7 @@ from app.db.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin
 
 class NotificationType(str, enum.Enum):
     APPROVAL_CODE = "approval_code"
+    SUPPORT_REPLY = "support_reply"
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -6,6 +6,15 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "5173"],
       "port": 5173
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.chdir('backend'); os.environ.setdefault('LETSGIVE_DATABASE_URL', 'sqlite+aiosqlite:///./dev_verify.db'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "port": 8000
     }
   ]
 }

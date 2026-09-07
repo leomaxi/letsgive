@@ -2,7 +2,9 @@ import { lazy, Suspense } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import RequireAuth from "@/auth/RequireAuth";
+import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
+import AdminLayout from "@/components/AdminLayout";
 import DashboardLayout from "@/components/DashboardLayout";
 import InvitationsCard from "@/components/InvitationsCard";
 import JoinRequestsPendingCard from "@/components/JoinRequestsPendingCard";
@@ -31,6 +33,12 @@ const ReconciliationPage = lazy(() => import("@/pages/ReconciliationPage"));
 const SessionReportPage = lazy(() => import("@/pages/SessionReportPage"));
 const AuditLogPage = lazy(() => import("@/pages/AuditLogPage"));
 const BillingPage = lazy(() => import("@/pages/BillingPage"));
+const SupportTicketsPage = lazy(() => import("@/pages/SupportTicketsPage"));
+const SupportTicketDetailPage = lazy(() => import("@/pages/SupportTicketDetailPage"));
+const AdminOrganizationsPage = lazy(() => import("@/pages/admin/AdminOrganizationsPage"));
+const AdminOrganizationDetailPage = lazy(() => import("@/pages/admin/AdminOrganizationDetailPage"));
+const AdminTicketsPage = lazy(() => import("@/pages/admin/AdminTicketsPage"));
+const AdminTicketDetailPage = lazy(() => import("@/pages/admin/AdminTicketDetailPage"));
 
 function PageFallback() {
   return (
@@ -41,6 +49,7 @@ function PageFallback() {
 }
 
 export function HomeRoute() {
+  const { user } = useAuth();
   const { organizations, isLoading, isFetching } = useOrg();
   const invitationsQuery = useQuery({
     queryKey: ["my-invitations"],
@@ -50,6 +59,14 @@ export function HomeRoute() {
     queryKey: ["my-join-requests"],
     queryFn: joinRequestApi.listMine,
   });
+
+  // A platform-admin account is never expected to hold any tenant
+  // membership -- it must never fall into the "no orgs" branch below and get
+  // bounced to /organizations/new. Checked as soon as `user` loads,
+  // independent of OrgContext's own (still-loading) org-list fetch.
+  if (user?.is_platform_admin) {
+    return <Navigate to="/admin/organizations" replace />;
+  }
 
   if (isLoading || invitationsQuery.isLoading || joinRequestsQuery.isLoading) {
     return (
@@ -123,7 +140,17 @@ export default function App() {
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/sessions/:sessionId/report" element={<SessionReportPage />} />
             <Route path="/audit" element={<AuditLogPage />} />
+            <Route path="/support" element={<SupportTicketsPage />} />
+            <Route path="/support/:ticketId" element={<SupportTicketDetailPage />} />
             <Route path="/billing" element={<BillingPage />} />
+          </Route>
+
+          <Route element={<AdminLayout />}>
+            <Route path="/admin" element={<Navigate to="/admin/organizations" replace />} />
+            <Route path="/admin/organizations" element={<AdminOrganizationsPage />} />
+            <Route path="/admin/organizations/:orgId" element={<AdminOrganizationDetailPage />} />
+            <Route path="/admin/tickets" element={<AdminTicketsPage />} />
+            <Route path="/admin/tickets/:ticketId" element={<AdminTicketDetailPage />} />
           </Route>
         </Route>
 

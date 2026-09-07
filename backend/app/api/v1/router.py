@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin,
     audit,
     auth,
     connections,
@@ -13,6 +14,7 @@ from app.api.v1 import (
     reconciliation,
     reports,
     sessions,
+    support,
     webhooks,
 )
 
@@ -31,4 +33,6 @@ api_router.include_router(reconciliation.router)
 api_router.include_router(reports.router)
 api_router.include_router(plans.router)
 api_router.include_router(audit.router)
+api_router.include_router(support.router)
+api_router.include_router(admin.router)
 api_router.include_router(webhooks.router)
