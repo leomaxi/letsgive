@@ -27,15 +27,24 @@ async def _imap_poll_loop() -> None:
     matching this app's other in-process infra (app/domain/realtime.py) --
     a horizontally-scaled deployment would need to run this on exactly one
     worker, or move it to a real task queue.
+
+    Sleeps *before* its first poll, deliberately -- a real production
+    measurement showed a fresh process's IDLE-watcher startup sweep (which
+    already does its own catch-up poll per connection, covering exactly the
+    "what happened while we were down" gap this loop also exists for)
+    racing this loop's old immediate first iteration for the same
+    connection's lock, adding a genuine 25+ second delay to a real deposit's
+    detection for no benefit -- both mechanisms were doing the same
+    redundant work at the same moment right after every single restart.
     """
     interval = get_settings().imap_poll_interval_seconds
     while True:
+        await asyncio.sleep(interval)
         try:
             async with AsyncSessionLocal() as db:
                 await poll_all_imap_connections(db)
         except Exception:  # noqa: BLE001 -- a bad poll cycle must not kill the loop
             logger.exception("IMAP poll loop iteration failed")
-        await asyncio.sleep(interval)
 
 
 async def _plan_expiry_loop() -> None:

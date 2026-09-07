@@ -356,8 +356,12 @@ async def _poll_imap_connection_locked(
         # taking this long -- as opposed to time spent waiting on the lock
         # above, which is logged separately -- points at the mailbox
         # provider's own response time, not anything in this app's control.
+        # Deliberately worded to contain "IMAP poll" -- the same substring
+        # already used for the lock-wait line and the final summary line,
+        # since a real diagnostic session grepped for exactly that phrase
+        # and a mismatched wording here would have made this line invisible.
         logger.info(
-            "IMAP fetch for connection %s took %.1fs (connect+login+search+fetch)",
+            "IMAP poll fetch for connection %s took %.1fs (connect+login+search+fetch)",
             connection.id,
             fetch_seconds,
         )

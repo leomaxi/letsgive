@@ -1494,3 +1494,31 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   broadcast call and the operator console's periodic-refetch safety net were both already confirmed
   working in earlier rounds), but not yet confirmed either way. Full suite (167 backend) unaffected —
   purely additive logging, no behavior change. **Not deployed yet.**
+- **Deployed, and the new timing lines immediately found a real, fixable cause — plus exposed a bug
+  in the diagnostic logging itself.** Two real log captures came back:
+  - Right at process startup: `Started IMAP IDLE watcher ... / IDLE startup sweep: watching 1
+    connection(s)` at `00:32:35`, then `IMAP poll for connection ... waited 25.5s for the
+    per-connection lock` at `00:33:00`. This nails the cause of *that* delay as genuine lock
+    contention, and the reason is structural, not incidental: `app/main.py`'s `_imap_poll_loop` ran
+    its *first* iteration immediately on startup with no initial sleep, so on every single restart it
+    raced the IDLE watcher's own startup catch-up poll (`start_all_watchers`) for the lock on the
+    exact same connection — two mechanisms doing the same redundant "catch up on what we missed"
+    work at the same moment, one just making the other wait. Fixed by moving `_imap_poll_loop`'s
+    `asyncio.sleep(interval)` to the *top* of its loop instead of the bottom, so it no longer polls at
+    all until `interval` seconds after startup — by then the IDLE watchers have already done their own
+    catch-up, so the fallback loop skipping its first run loses nothing.
+  - For a real deposit's actual push-to-fetch path: `IMAP IDLE wait ... ended: pushed` at `00:36:10`,
+    then `fetched=1 accepted=1` a full 61 seconds later at `00:37:11` — with **no lock-wait line in
+    between**, meaning this delay was *not* lock contention this time. That should have left the new
+    `fetch_seconds > 5` timing line as the only remaining explanation — except it never showed up in
+    the user's grep output either, because of a bug in the logging change itself: the line was worded
+    `"IMAP fetch for connection ..."`, which doesn't contain the substring `"imap poll"` the
+    diagnostic instructions had the user grepping for, so it would have been silently filtered out of
+    every capture regardless of whether it fired. Fixed by rewording it to `"IMAP poll fetch for
+    connection ..."` so it's covered by the same grep everyone's already using. The actual root cause
+    of this second, 61-second gap is **still unconfirmed** — it's now most likely explained by the
+    very thing this logging bug was hiding, but that needs one more clean real-mailbox test to verify.
+  - Full suite (167 backend) green; the loop-ordering change isn't independently unit tested (matching
+    this codebase's existing pattern of not testing `_imap_poll_loop`/`_plan_expiry_loop` directly,
+    only the functions they call, which the lock-serialization test already covers). **Not deployed
+    yet.**
