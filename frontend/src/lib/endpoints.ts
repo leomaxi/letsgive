@@ -216,6 +216,9 @@ export const connectionApi = {
 
   recentMessages: (orgId: string, connectionId: string) =>
     api.get<RecentImapMessage[]>(`/v1/organizations/${orgId}/connections/${connectionId}/recent-messages`),
+
+  remove: (orgId: string, connectionId: string) =>
+    api.delete<void>(`/v1/organizations/${orgId}/connections/${connectionId}`),
 };
 
 export interface CreateParserProfilePayload {

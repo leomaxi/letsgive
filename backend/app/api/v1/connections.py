@@ -12,6 +12,7 @@ from app.api.v1.schemas import (
     ParserProfileUpdateRequest,
     RecentImapMessageOut,
 )
+from app.db.models.contribution_event import ContributionEvent
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
 from app.db.models.organization import Organization
@@ -180,6 +181,67 @@ async def revoke_connection(
     await db.commit()
     await db.refresh(connection)
     return connection
+
+
+@router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_connection(
+    organization_id: str,
+    connection_id: str,
+    request: Request,
+    membership: Membership = Depends(get_membership),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Permanently removes a connection from the list -- only once it's
+    already revoked (revoke first is a deliberate two-step, same shape as
+    every other destructive action in this app) and only if it never
+    actually ingested a real deposit. ContributionEvent.mailbox_connection_id
+    is a real foreign key with no cascade behavior configured on purpose --
+    hard-deleting a connection that ledger rows still point at would either
+    fail outright or (worse, on a database that doesn't enforce the
+    constraint) silently orphan real donation history. A connection that's
+    never processed anything (created by mistake, or the wrong mailbox) has
+    no such history to protect, so deleting it is unconditionally safe.
+    """
+    require_roles(membership, Role.OWNER, Role.FINANCE)
+
+    connection = await db.get(MailboxConnection, connection_id)
+    if connection is None or connection.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
+    if connection.status != ConnectionStatus.REVOKED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only a revoked connection can be deleted. Revoke it first.",
+        )
+
+    result = await db.execute(
+        select(ContributionEvent.id)
+        .where(ContributionEvent.mailbox_connection_id == connection_id)
+        .limit(1)
+    )
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This connection has processed real deposit events and can't be deleted, to "
+                "keep the ledger's history intact. It's already revoked and hidden from new "
+                "sessions."
+            ),
+        )
+
+    await record_audit_event(
+        db,
+        action="connection.deleted",
+        target_type="mailbox_connection",
+        target_id=connection.id,
+        organization_id=organization_id,
+        actor_user_id=current_user.id,
+        before={"provider": connection.provider.value, "mailbox": connection.mailbox},
+        ip_address=_client_ip(request),
+    )
+
+    await db.delete(connection)
+    await db.commit()
 
 
 @router.post("/connections/{connection_id}/check-now", response_model=ImapCheckNowResponse)

@@ -1125,3 +1125,34 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.
+- **Fixed a real production 500 on reconnecting a mailbox**: the user hit
+  `POST .../connections` returning a raw 500 (no useful message) while re-adding
+  `methodistchurchstjohns@gmail.com` via IMAP after its previous connection had been revoked.
+  `_get_baseline_uid_sync` (`app/domain/imap_provider.py`) only caught `imaplib.IMAP4.error` around
+  `login()`/`status()` — a mid-call `OSError` (network timeout/reset *after* the socket was already
+  open, which the outer connect-time try/except doesn't cover) propagated straight past FastAPI's
+  exception handling as an unhandled 500. Added an `except OSError` branch that wraps it in the
+  same clean, user-facing `ImapAuthError` a login failure already gets. Regression-tested the usual
+  way: a `ConnectionResetError` side-effect on the mocked `.status()` call, confirmed it produced a
+  raw exception (test failure) without the fix and a clean `ImapAuthError` with it restored.
+  The `422 (Unprocessable Content)` the user also saw in that same browser console log, one request
+  earlier, was **not** conclusively diagnosed — the visible payload (a valid email + app password)
+  should pass the current request schema, so it's most likely a stale entry from an earlier,
+  incomplete submit attempt rather than the same request that then 500'd. Worth reproducing directly
+  if it recurs. Separately: this round's and the previous several rounds' migrations (0009 through
+  0013 — `join_code`, the `notifications` table, `imap_last_uid`, etc.) have not been confirmed
+  applied on the `letsgive.ca` production database. An un-migrated schema would independently
+  produce 500-shaped failures on any endpoint touching those new columns/tables, IMAP connection
+  creation included (it writes `imap_last_uid`) — run `alembic upgrade head` there before assuming
+  the `OSError` fix alone explains everything.
+- **Added the ability to delete a revoked mailbox connection** (`DELETE
+  /connections/{connection_id}`, Owner/Finance only) — until now a revoked connection stuck around
+  in the list forever with no way to clean it up (e.g. the wrong mailbox, or one abandoned after a
+  fix like the one above). Deletion is a deliberate two-step (revoke first, same shape as every
+  other destructive action in this app) and only allowed once the connection never actually
+  ingested a real deposit: `ContributionEvent.mailbox_connection_id` is a real foreign key with no
+  cascade configured on purpose, so a connection with ledger history stays revoked-but-undeletable
+  rather than risking an orphaned or failed hard-delete. Frontend: a "Delete"/"Confirm delete"
+  button pair on `MailboxSettingsPage`, shown only for `revoked` connections, mirroring the existing
+  parser-profile delete UI. 5 new backend tests cover the happy path, the not-yet-revoked 400, the
+  has-ledger-history 400, the Media-role 403, and cross-org 404.

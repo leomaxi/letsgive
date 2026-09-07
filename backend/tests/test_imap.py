@@ -89,6 +89,26 @@ async def test_connect_and_get_baseline_uid_wraps_auth_failure_in_a_readable_mes
             assert "app-specific password" in str(exc)
 
 
+async def test_connect_and_get_baseline_uid_wraps_a_network_error_after_login_too():
+    # A real production bug: login succeeded, but the network hiccuped on
+    # the very next call (STATUS ... UIDNEXT). The old code only wrapped
+    # imaplib.IMAP4.error there, so a raw OSError (timeout, connection
+    # reset) propagated all the way out of the API endpoint unhandled -- a
+    # bare 500 with no useful message, instead of the same clean,
+    # user-facing error a login failure already gets.
+    imap_instance = MagicMock()
+    imap_instance.login.return_value = ("OK", [b"done"])
+    imap_instance.status.side_effect = ConnectionResetError("connection reset by peer")
+    with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=imap_instance):
+        try:
+            await connect_and_get_baseline_uid(
+                host="imap.gmail.com", port=993, mailbox="a@gmail.com", password="app-pw"
+            )
+            raise AssertionError("expected ImapAuthError")
+        except ImapAuthError as exc:
+            assert "imap.gmail.com" in str(exc)
+
+
 def test_parse_message_extracts_sender_subject_body_and_message_id():
     fetched = _parse_message(b"12", _build_raw_email())
     assert fetched.uid == "12"

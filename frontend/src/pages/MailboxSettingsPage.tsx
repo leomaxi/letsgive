@@ -64,6 +64,8 @@ function ConnectionsSection() {
   const [imapHost, setImapHost] = useState("");
   const [imapPort, setImapPort] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const connectionsQuery = useQuery({
     queryKey: ["connections", activeOrg?.id],
@@ -99,6 +101,17 @@ function ConnectionsSection() {
   const revokeMutation = useMutation({
     mutationFn: (connectionId: string) => connectionApi.revoke(activeOrg!.id, connectionId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections", activeOrg?.id] }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (connectionId: string) => connectionApi.remove(activeOrg!.id, connectionId),
+    onSuccess: () => {
+      setConfirmingDeleteId(null);
+      setDeleteError(null);
+      queryClient.invalidateQueries({ queryKey: ["connections", activeOrg?.id] });
+    },
+    onError: (err) =>
+      setDeleteError(err instanceof ApiError ? err.message : "Could not delete that connection."),
   });
 
   function onSubmit(e: FormEvent) {
@@ -146,6 +159,38 @@ function ConnectionsSection() {
                     Revoke
                   </Button>
                 )}
+                {canManage && c.status === "revoked" && (
+                  confirmingDeleteId === c.id ? (
+                    <>
+                      <Button
+                        variant="danger"
+                        disabled={deleteMutation.isPending}
+                        onClick={() => deleteMutation.mutate(c.id)}
+                      >
+                        Confirm delete
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setConfirmingDeleteId(null);
+                          setDeleteError(null);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setConfirmingDeleteId(c.id);
+                        setDeleteError(null);
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  )
+                )}
               </div>
             </li>
           ))}
@@ -153,6 +198,7 @@ function ConnectionsSection() {
       ) : (
         <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No mailbox connections yet.</p>
       )}
+      <ErrorText>{deleteError}</ErrorText>
 
       {!canManage && (
         <p className="text-sm text-slate-500 dark:text-slate-400">

@@ -53,6 +53,14 @@ def _get_baseline_uid_sync(*, host: str, port: int, mailbox: str, password: str)
             "an app-specific password (not your regular account password) and that IMAP access "
             "is turned on for the account."
         ) from exc
+    except OSError as exc:
+        # A network hiccup (timeout, connection reset, DNS blip) *after* the
+        # socket was already open -- the outer try/except above only guards
+        # the initial connect. Without this, a mid-call network error would
+        # propagate as a raw, unhandled exception all the way out of the API
+        # endpoint (a 500 with no useful message) instead of the same clean,
+        # user-facing error a login failure already gets.
+        raise ImapAuthError(f"Lost the connection to {host}:{port} ({exc}).") from exc
     finally:
         try:
             connection.logout()
