@@ -1378,3 +1378,8 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     against production-shaped data; verify via the same `journalctl | grep -i idle` check after
     redeploying — a single recovered failure is fine, a *repeating* one or the watcher going silent
     afterward means this fix didn't fully close it.
+- **Login sessions extended from 1 hour to 8** (`Settings.access_token_expire_minutes`,
+  `app/core/config.py`) — a live giving session or church service routinely runs past an hour, and an
+  operator getting silently logged out mid-session was disruptive with no real security upside
+  (`LETSGIVE_JWT_SECRET` rotation already invalidates every outstanding token instantly if one ever
+  needs revoking early).
