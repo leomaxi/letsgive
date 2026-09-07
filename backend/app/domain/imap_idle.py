@@ -113,49 +113,89 @@ def _connect_and_idle_sync(
 
 
 async def _watch_connection(connection_id: str) -> None:
-    """Long-running task, one per connected IMAP mailbox: waits for the
-    server to say something changed (or a periodic timeout) and re-runs the
-    existing poll_imap_connection pipeline. IDLE is only ever a trigger,
-    never a second fetch path -- the actual parsing/ingestion stays exactly
-    as already tested. Never needs manual recovery: any error just backs
-    off and retries the connection from scratch on the next loop.
+    """Long-running task, one per connected IMAP mailbox. Never needs manual
+    recovery: this outer loop catches literally anything an iteration could
+    raise and just retries from scratch, matching the same "one bad cycle
+    must not kill the loop" resilience the poll loops in app/main.py
+    already have -- without it, an exception escaping a DB session's
+    implicit close (e.g. after an earlier query failed and left the
+    session needing a rollback) would silently end this task for good, no
+    more real-time detection for this mailbox until the next full process
+    restart, with nothing in the logs pointing at why.
     """
     while True:
-        idle_supported = False
+        try:
+            if await _watch_connection_iteration(connection_id):
+                return
+        except Exception:  # noqa: BLE001
+            logger.exception("IMAP IDLE watcher iteration failed for %s", connection_id)
+            await asyncio.sleep(_ERROR_BACKOFF_SECONDS)
+
+
+async def _watch_connection_iteration(connection_id: str) -> bool:
+    """One catch-up-poll-then-IDLE-wait cycle. Returns True if this watcher
+    should stop entirely (the connection was revoked/deleted/lost its
+    credentials), False to keep looping. IDLE is only ever a trigger, never
+    a second fetch path -- the actual parsing/ingestion stays exactly as
+    already tested in poll_imap_connection.
+    """
+    async with AsyncSessionLocal() as db:
+        connection = await db.get(MailboxConnection, connection_id)
+        if (
+            connection is None
+            or connection.status != ConnectionStatus.CONNECTED
+            or connection.provider != MailboxProviderName.IMAP
+        ):
+            return True  # revoked/deleted/gone -- this watcher's job is done
+
+        try:
+            await poll_imap_connection(db, connection)
+        except Exception:  # noqa: BLE001 -- one bad cycle must not stop watching
+            logger.exception("IMAP IDLE watcher catch-up poll failed for %s", connection_id)
+            # Without this, a session left in a failed-transaction state by
+            # the exception above could raise *again* on implicit
+            # close/commit when this `async with` block exits below --
+            # exactly the real production failure that motivated splitting
+            # this function out of the old single-session version of it.
+            await db.rollback()
+
+        if not connection.imap_host or not connection.imap_port or not connection.imap_password:
+            logger.warning("IMAP IDLE watcher for %s is missing credentials; stopping", connection_id)
+            return True
+
+        host, port, mailbox, password = (
+            connection.imap_host,
+            connection.imap_port,
+            connection.mailbox,
+            connection.imap_password,
+        )
+
+    # The session above is already closed -- the long IDLE wait below
+    # deliberately holds no database connection open across it. A MySQL
+    # server's own idle-connection timeout (or a proxy/pooler in front of
+    # it) can kill a connection that just sits open-but-unused for up to
+    # _IDLE_TIMEOUT_SECONDS (~23 minutes); the next query on it then fails
+    # with a "server has gone away"-style error instead of a clean
+    # reconnect -- a real production failure this split fixes.
+    try:
+        idle_supported = await asyncio.to_thread(
+            _connect_and_idle_sync,
+            host=host,
+            port=port,
+            mailbox=mailbox,
+            password=password,
+            timeout=_IDLE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 -- keep watching through transient errors
+        logger.warning("IMAP IDLE connection lost for %s: %s", connection_id, exc)
         async with AsyncSessionLocal() as db:
             connection = await db.get(MailboxConnection, connection_id)
-            if (
-                connection is None
-                or connection.status != ConnectionStatus.CONNECTED
-                or connection.provider != MailboxProviderName.IMAP
-            ):
-                return  # revoked/deleted/gone -- this watcher's job is done
-
-            try:
-                await poll_imap_connection(db, connection)
-            except Exception:  # noqa: BLE001 -- one bad cycle must not kill the watcher
-                logger.exception("IMAP IDLE watcher catch-up poll failed for %s", connection_id)
-
-            if not connection.imap_host or not connection.imap_port or not connection.imap_password:
-                logger.warning("IMAP IDLE watcher for %s is missing credentials; stopping", connection_id)
-                return
-
-            try:
-                idle_supported = await asyncio.to_thread(
-                    _connect_and_idle_sync,
-                    host=connection.imap_host,
-                    port=connection.imap_port,
-                    mailbox=connection.mailbox,
-                    password=connection.imap_password,
-                    timeout=_IDLE_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:  # noqa: BLE001 -- keep watching through transient errors
-                logger.warning("IMAP IDLE connection lost for %s: %s", connection_id, exc)
+            if connection is not None:
                 connection.webhook_health = f"Reconnecting after a lost IDLE connection: {exc}"[:255]
                 await db.commit()
-                await asyncio.sleep(_ERROR_BACKOFF_SECONDS)
-                continue
+        await asyncio.sleep(_ERROR_BACKOFF_SECONDS)
+        return False
 
-        if not idle_supported:
-            await asyncio.sleep(_NO_IDLE_POLL_SECONDS)
-        # else: loop straight back to the top for another catch-up poll.
+    if not idle_supported:
+        await asyncio.sleep(_NO_IDLE_POLL_SECONDS)
+    return False
