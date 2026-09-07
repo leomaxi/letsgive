@@ -1522,3 +1522,40 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     this codebase's existing pattern of not testing `_imap_poll_loop`/`_plan_expiry_loop` directly,
     only the functions they call, which the lock-serialization test already covers). **Not deployed
     yet.**
+- **Deployed, and the reworded log line finally answered the question — this is not lock contention
+  and not an application bug at all: every single IMAP connection this app makes to this mailbox
+  takes roughly 25-35 seconds just to connect, login, and run one command.** Two real captures:
+  - At startup, with zero contention (the previous round's lock-race fix already deployed and
+    confirmed working — no lock-wait line this time): `IMAP poll fetch for connection ... took 25.5s`.
+  - For a real deposit: `pushed` at `00:55:29`, `IMAP poll fetch ... took 34.4s` logged at `00:56:04`,
+    then the final `fetched=1 accepted=1` summary line another 26 seconds later at `00:56:30` — two
+    separate ~25-35s delays back to back, adding up to the same ~60s total seen in earlier rounds.
+  - That second, previously-unexplained 26 seconds (between the fetch finishing and the poll's own
+    summary log) turned out to be `_mark_seen_sync` — marking the message `\Seen`, which opens its
+    *own separate* IMAP connect/login/select/store/logout cycle, paying the same ~25-35s connection
+    cost a second time. **Real, fixable bug found here**: the WebSocket broadcast that actually makes
+    the operator console and public display update ran *after* this mark-seen call, even though the
+    contribution was already committed to the database before either of them — meaning the one thing
+    that has to feel instant was needlessly waiting on a purely cosmetic mailbox-flag round trip the
+    code's own long-standing comment already says ingestion doesn't depend on at all. Fixed by
+    reordering `_poll_imap_connection_locked` (`app/domain/imap_polling.py`) so the broadcast loop
+    runs immediately after the DB commit, with mark-seen moved after it. Regression-tested the
+    disciplined way: temporarily restored the old order, added a new test
+    (`test_broadcast_runs_before_marking_the_message_seen` in `test_imap.py`) that records call order
+    via a patched `broadcast_session_update` and a fake `store` UID command, confirmed it fails with
+    `['mark_seen', 'broadcast']` under the old order, restored the fix, confirmed
+    `['broadcast', 'mark_seen']`. Also added a `mark_seen_seconds > 5` timing log (mirroring the fetch
+    one) so a future slow mark-seen is visible without needing to re-derive this by subtraction again.
+  - **What's actually causing every single IMAP connection from this VPS to take 25-35 seconds is
+    still an open question, and it now looks like a networking issue outside this codebase entirely**
+    — a symptom-fits-perfectly (though unconfirmed) candidate is the classic "IPv6 route exists but is
+    slow or black-holed, so every connection attempt eats a full IPv6 connect timeout before falling
+    back to IPv4" problem common on VPS hosts with default dual-stack networking. Nothing in this
+    app's Python code controls that; `imaplib`/`imapclient` both just call `socket.create_connection`,
+    which tries whatever `getaddrinfo` returns in order. Worth a direct check on the server itself
+    (e.g. timing a raw `socket.create_connection`/`openssl s_client` connection to the mailbox host,
+    or comparing `ping`/`curl -4` vs `curl -6` latency) before assuming any more code changes here will
+    help — the reordering fix above at least stops today's slowness from delaying the live UI update,
+    but the underlying ~25-35s-per-connection cost is unchanged and will still show up as the delay
+    between the IDLE push and the count actually changing.
+  - Full suite (168 backend) green; 1 new regression test. **Not deployed yet.**

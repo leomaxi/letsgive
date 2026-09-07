@@ -376,3 +376,76 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
         headers={"Authorization": f"Bearer {media_token}"},
     )
     assert resp.status_code == 403
+
+
+async def test_broadcast_runs_before_marking_the_message_seen(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    # Real production measurement: marking \Seen is its own separate IMAP
+    # connect/login/select/store round trip, and on a slow connection it took
+    # 25-35s on its own -- time that used to run *before* the WebSocket
+    # broadcast that makes the operator console and public display actually
+    # update, needlessly delaying the one thing that has to feel instant for
+    # a purely cosmetic mailbox flag a human might never even look at.
+    owner_token, org = await _owner_org(client, "imapbroadcastorder")
+    await add_active_member(
+        client, db_session, owner_token, org["id"], "finance-imapbroadcastorder@example.org",
+        "finance", needs_mfa=True,
+    )
+
+    creation_mock = MagicMock()
+    creation_mock.login.return_value = ("OK", [b"done"])
+    creation_mock.status.return_value = ("OK", [b"INBOX (UIDNEXT 1)"])
+    with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=creation_mock):
+        resp = await client.post(
+            f"/v1/organizations/{org['id']}/connections",
+            json={"provider": "imap", "mailbox": "deposits@gmail.com", "imap_password": "app-pw"},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+    assert resp.status_code == 201, resp.text
+    connection = resp.json()
+
+    await create_parser_profile(
+        client, owner_token, org["id"], sender_patterns=["notifications@fakebank.com"]
+    )
+    session = await create_session(
+        client, owner_token, org["id"], mailbox_connection_id=connection["id"]
+    )
+    authorized = await approve_session(client, notifier, owner_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    order: list[str] = []
+
+    def uid_command(command: str, *args):
+        if command == "search":
+            return ("OK", [b"1"])
+        if command == "fetch":
+            return ("OK", [(b"1 (BODY[] {0}", _build_raw_email()), b")"])
+        if command == "store":
+            order.append("mark_seen")
+            return ("OK", [b"done"])
+        raise AssertionError(f"unexpected UID command: {command}")
+
+    poll_mock = MagicMock()
+    poll_mock.login.return_value = ("OK", [b"done"])
+    poll_mock.uid.side_effect = uid_command
+
+    async def fake_broadcast(db, session):
+        order.append("broadcast")
+
+    with (
+        patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=poll_mock),
+        patch("app.api.v1.sessions.broadcast_session_update", side_effect=fake_broadcast),
+    ):
+        resp = await client.post(
+            f"/v1/organizations/{org['id']}/connections/{connection['id']}/check-now",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"fetched": 1, "accepted": 1, "error": None}
+    assert order == ["broadcast", "mark_seen"]

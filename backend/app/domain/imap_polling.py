@@ -394,7 +394,23 @@ async def _poll_imap_connection_locked(
     connection.webhook_health = "ok"
     await db.commit()
 
+    # Broadcast BEFORE marking \Seen, deliberately -- a real production
+    # measurement showed marking \Seen (its own separate IMAP connect/
+    # login/select/store round trip, purely cosmetic for a human glancing at
+    # the mailbox -- ingestion tracking doesn't depend on it at all) taking
+    # ~25-35s on a slow connection, needlessly delaying the one thing that
+    # actually needs to feel instant: the operator console and public
+    # display updating the moment a real deposit is accepted. The
+    # contribution is already committed above by this point either way.
+    for session_id in sessions_to_broadcast:
+        session = await db.get(Session, session_id)
+        if session is not None:
+            from app.api.v1.sessions import broadcast_session_update  # local import: avoids a circular import at module load time
+
+            await broadcast_session_update(db, session)
+
     if successfully_ingested_uids:
+        mark_seen_started = time.monotonic()
         try:
             await asyncio.to_thread(
                 _mark_seen_sync,
@@ -409,13 +425,15 @@ async def _poll_imap_connection_locked(
             # is purely cosmetic for a human glancing at the mailbox --
             # ingestion tracking doesn't depend on the \Seen flag at all.
             logger.exception("Failed to mark %d IMAP message(s) as seen", len(successfully_ingested_uids))
-
-    for session_id in sessions_to_broadcast:
-        session = await db.get(Session, session_id)
-        if session is not None:
-            from app.api.v1.sessions import broadcast_session_update  # local import: avoids a circular import at module load time
-
-            await broadcast_session_update(db, session)
+        else:
+            mark_seen_seconds = time.monotonic() - mark_seen_started
+            if mark_seen_seconds > 5:
+                logger.info(
+                    "IMAP poll mark-seen for connection %s took %.1fs (runs after the broadcast above,"
+                    " so this no longer delays the operator/public views)",
+                    connection.id,
+                    mark_seen_seconds,
+                )
 
     if fetched:
         # The only line in this module that fires on a normal successful
