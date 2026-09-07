@@ -35,13 +35,14 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
 
     # How often app/main.py's background loop re-checks every connected IMAP
-    # mailbox for new deposit notifications (spec 9 pull, IMAP has no webhook
-    # of its own). Lower = donors see their gift counted sooner during a live
-    # session, at the cost of one more IMAP login/logout cycle per connected
-    # mailbox each interval -- most providers (Gmail included) treat a fresh
-    # login as a security-relevant event, so don't drop this to single-digit
-    # seconds without a reason.
-    imap_poll_interval_seconds: int = 15
+    # mailbox for new deposit notifications. This is now only a slower
+    # safety net, not the primary mechanism -- real-time detection comes
+    # from per-mailbox IMAP IDLE watchers (app/domain/imap_idle.py), which
+    # get notified by the server the instant new mail arrives instead of
+    # asking repeatedly. This loop exists as defense in depth for a watcher
+    # that silently died, and as a backstop for a provider that doesn't
+    # support IDLE at all -- it doesn't need IDLE-level urgency.
+    imap_poll_interval_seconds: int = 300
 
     # How often app/main.py's background loop checks for organizations whose
     # admin-assigned plan_expires_at has passed (see app/domain/subscriptions.py

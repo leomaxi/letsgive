@@ -23,6 +23,24 @@ from app.domain.mailbox_providers import RawMessage
 
 logger = logging.getLogger("letsgive.imap")
 
+# Every trigger that can fetch a given connection -- the manual "check now"
+# button, the IDLE-triggered catch-up (app/domain/imap_idle.py), and the
+# slower fallback poll loop (app/main.py) -- funnels through
+# poll_imap_connection below, so a single lock registry here makes all of
+# them mutually exclusive per mailbox with no call site able to forget it.
+# A real production 500 was traced to two of these racing the same
+# connection's IMAP session/watermark update at once.
+_connection_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(connection_id: str) -> asyncio.Lock:
+    lock = _connection_locks.get(connection_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _connection_locks[connection_id] = lock
+    return lock
+
+
 # In-memory only, deliberately never written to the database: a rolling
 # per-connection diagnostic trail of exactly what the IMAP poller fetched
 # and how the parser judged it, for an Owner/Finance officer to see *why* a
@@ -275,7 +293,19 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
     also makes this correctly idempotent even if ingestion or the \\Seen
     mark-back below fails partway through -- see ingest_message for the
     dedup guarantee that makes re-examining an already-ingested UID safe.
+
+    Every caller (the manual check-now endpoint, the IDLE-triggered catch-up,
+    the slower fallback poll loop) is serialized per connection via the lock
+    below -- two triggers racing the same mailbox's IMAP session/watermark at
+    once produced a real unhandled-exception 500 in production.
     """
+    async with _lock_for(connection.id):
+        return await _poll_imap_connection_locked(db, connection)
+
+
+async def _poll_imap_connection_locked(
+    db: AsyncSession, connection: MailboxConnection
+) -> ImapPollSummary:
     if connection.provider != MailboxProviderName.IMAP:
         return ImapPollSummary(fetched=0, accepted=0, error="Not an IMAP connection.")
     if not connection.imap_host or not connection.imap_port or not connection.imap_password:

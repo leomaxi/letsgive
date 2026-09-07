@@ -24,6 +24,7 @@ from app.db.models.parser_profile import (
 )
 from app.db.models.user import User
 from app.db.session import get_db
+from app.domain import imap_idle
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_create_connection
 from app.domain.imap_polling import get_recent_messages, poll_imap_connection
@@ -130,6 +131,13 @@ async def create_connection(
 
     await db.commit()
     await db.refresh(connection)
+
+    # Started only after commit -- the watcher opens its own separate DB
+    # session (app/domain/imap_idle.py) and would find nothing yet if
+    # started while this request's transaction was still open.
+    if connection.provider == MailboxProviderName.IMAP and connection.status == ConnectionStatus.CONNECTED:
+        imap_idle.start_watching(connection.id)
+
     return connection
 
 
@@ -180,6 +188,7 @@ async def revoke_connection(
 
     await db.commit()
     await db.refresh(connection)
+    imap_idle.stop_watching(connection.id)
     return connection
 
 
@@ -242,6 +251,7 @@ async def delete_connection(
 
     await db.delete(connection)
     await db.commit()
+    imap_idle.stop_watching(connection_id)
 
 
 @router.post("/connections/{connection_id}/check-now", response_model=ImapCheckNowResponse)

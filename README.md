@@ -1299,3 +1299,56 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     `test_admin.py` for search-by-email and the expiry revert, both directions, 3 in
     `test_sessions.py` for canceling from each pre-live state); full suite (152 backend, 42
     frontend) + typecheck/lint/build all green.
+- **Real-time IMAP deposit detection via IDLE, plus a concurrency fix for a production 500.** A
+  platform admin's `is_platform_admin` flag turned out to genuinely not be set on their account
+  (the earlier deploy-gap troubleshooting was a red herring); once that was fixed, the very next
+  real bug was a `500` on the manual "Check now" button, immediately followed by "avoid delays,
+  congregation wants instant results" — the app's only mechanism at that point was a plain 15s poll.
+  - **The 500's likely cause**: nothing in this codebase prevented the background poll loop and a
+    manual "Check now" click from calling `poll_imap_connection` for the *same* connection at the
+    same time — the symptom described (manual click fails, the identical message shows up moments
+    later via the automatic path) fits a race on the same IMAP session/watermark update well. Added
+    a module-level `dict[str, asyncio.Lock]` registry keyed by connection id in
+    `app/domain/imap_polling.py`; `poll_imap_connection` acquires its connection's lock as the first
+    thing it does, so every trigger (manual, IDLE-triggered, fallback poll) is automatically
+    mutually exclusive per mailbox with no call site able to forget it. Regression-tested the usual
+    disciplined way: a test with two concurrent calls sharing one `AsyncSession` (mirroring the real
+    production shape) reproduces a genuine SQLAlchemy `IllegalStateChangeError` when the lock is
+    removed, confirmed red, restored the fix, confirmed green.
+  - **Real-time detection**: rather than just shortening the poll interval further, added actual
+    push notifications via IMAP's `IDLE` extension (RFC 2177) -- `imapclient` (new dependency;
+    stdlib `imaplib` has no IDLE support) keeps one long-lived connection open per mailbox
+    (`app/domain/imap_idle.py`, one `asyncio` task per connection, `asyncio.to_thread` off the event
+    loop same as the rest of this module) and the *server* notifies the app the instant new mail
+    arrives, instead of the app asking repeatedly. Deliberately **not** a second fetch path: IDLE is
+    only ever a trigger -- the moment a wait ends (a real notification, or a ~23-minute timeout kept
+    well under IMAP's ~29-minute idle-timeout convention so the connection self-refreshes even with
+    no activity) it just calls the existing, already-tested `poll_imap_connection` to do the real
+    work, exactly like the manual button always has. A provider that doesn't support IDLE (checked
+    via capability negotiation) transparently falls back to a tight sleep-and-repoll cadence within
+    the same per-connection task, no special-casing needed elsewhere. Any connection error just
+    backs off and reconnects from scratch on the next loop -- a watcher never needs manual recovery.
+    Watchers start on `create_connection` (after commit, since the watcher opens its own separate DB
+    session and would find nothing yet if started while the request's transaction was still open),
+    stop on `revoke_connection`/`delete_connection`, and get swept back up for every already-connected
+    mailbox at process startup.
+  - The old poll loop (`app/main.py::_imap_poll_loop`) **stays**, deliberately, as a slower safety
+    net -- defense in depth for a watcher task that silently died, and a backstop for the
+    IDLE-unsupported case -- its default interval moved from 15s to 300s now that it's no longer the
+    primary mechanism.
+  - 6 new backend tests (`tests/test_imap_idle.py`): the lock-contention regression test above, IDLE
+    capability negotiation (idles when supported, falls back cleanly when not, mocking
+    `imapclient.IMAPClient` the same disciplined way `imaplib.IMAP4_SSL` is already mocked
+    elsewhere), and the watcher task registry (start/stop, and -- itself catching a real bug this
+    round introduced -- confirming `start_watching` is a no-op under pytest). That last one matters:
+    the first version of this wired `start_watching` directly into `create_connection` with no
+    pytest guard, which immediately broke every IMAP connection test by spawning a real background
+    task against the module-level (non-test) database engine instead of the per-test in-memory one
+    -- caught by just running the existing suite, fixed by guarding inside `start_watching` itself
+    rather than at each call site (so no future call site can reintroduce the same mistake). Full
+    suite (158 backend) green.
+  - **Not verified against a real mailbox this round** -- IDLE's actual "how fast does Gmail really
+    push a notification" behavior can't be meaningfully exercised against this app's local
+    fake/test-mode provider. What's confirmed is the lock, the capability-negotiation branches, and
+    the watcher lifecycle; the real-world latency needs a live check against `letsgive.ca` with an
+    actual connected mailbox after deploying.
