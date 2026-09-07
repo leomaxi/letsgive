@@ -263,6 +263,9 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
     await add_active_member(
         client, db_session, owner_token, org["id"], "finance-imappoll@example.org", "finance", needs_mfa=True
     )
+    media_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "media-imappoll@example.org", "media"
+    )
 
     creation_mock = MagicMock()
     creation_mock.login.return_value = ("OK", [b"done"])
@@ -328,3 +331,28 @@ async def test_check_now_polls_ingests_and_marks_the_message_seen(
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["accepted"] == 0
+
+    # The raw fetched-message log shows what actually happened, independent
+    # of the parser's decision -- this is the diagnostic surface for "why
+    # wasn't my deposit counted" without guessing blind.
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/connections/{connection['id']}/recent-messages",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    log = resp.json()
+    assert len(log) == 1
+    assert log[0]["sender"] == "notifications@fakebank.com"
+    assert log[0]["subject"] == "Deposit received"
+    assert "42.50" in log[0]["body_snippet"]
+    assert log[0]["decision"] == "accepted"
+
+    # Raw sender/subject/body content is more sensitive than the sanitized
+    # ledger data other list endpoints expose -- stays Owner/Finance-only,
+    # not opened to every active member the way audit-logs/reconciliation/
+    # connections were.
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/connections/{connection['id']}/recent-messages",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 403

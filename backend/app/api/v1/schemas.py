@@ -315,6 +315,24 @@ class ImapCheckNowResponse(BaseModel):
     error: str | None
 
 
+class RecentImapMessageOut(BaseModel):
+    """A raw fetched-message diagnostic entry, deliberately not run through
+    (or gated by) the parser's own decision -- see app/domain/imap_polling.py's
+    in-memory recent-message log for why this is never persisted to the
+    database. decision/decision_reason are included precisely so this can
+    answer "why wasn't this counted" without a second lookup.
+    """
+
+    uid: str
+    fetched_at: datetime
+    received_at: datetime
+    sender: str
+    subject: str
+    body_snippet: str
+    decision: str
+    decision_reason: str | None
+
+
 class ParserProfileCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     template_version: str = Field(default="v1", max_length=50)

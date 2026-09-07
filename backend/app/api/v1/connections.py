@@ -10,6 +10,7 @@ from app.api.v1.schemas import (
     ParserProfileCreateRequest,
     ParserProfileOut,
     ParserProfileUpdateRequest,
+    RecentImapMessageOut,
 )
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
@@ -24,7 +25,7 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_create_connection
-from app.domain.imap_polling import poll_imap_connection
+from app.domain.imap_polling import get_recent_messages, poll_imap_connection
 from app.domain.imap_provider import ImapAuthError, connect_and_get_baseline_uid, guess_imap_host
 from app.domain.mailbox_providers import get_provider
 from app.domain.rbac import require_roles
@@ -208,6 +209,48 @@ async def check_connection_now(
 
     summary = await poll_imap_connection(db, connection)
     return ImapCheckNowResponse(fetched=summary.fetched, accepted=summary.accepted, error=summary.error)
+
+
+@router.get(
+    "/connections/{connection_id}/recent-messages", response_model=list[RecentImapMessageOut]
+)
+async def list_recent_imap_messages(
+    organization_id: str,
+    connection_id: str,
+    membership: Membership = Depends(get_membership),
+    db: AsyncSession = Depends(get_db),
+) -> list[RecentImapMessageOut]:
+    """Raw fetched-message diagnostic trail (not run through/gated by the
+    parser's own decision) for an Owner/Finance officer to see exactly what
+    the poller found and how it was judged, without guessing blind -- see
+    app/domain/imap_polling.py's in-memory recent-message log for why this
+    is deliberately never persisted to the database. Most recent first,
+    capped, resets on server restart.
+    """
+    require_roles(membership, Role.OWNER, Role.FINANCE)
+
+    connection = await db.get(MailboxConnection, connection_id)
+    if connection is None or connection.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
+    if connection.provider != MailboxProviderName.IMAP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only IMAP connections have a fetched-message log.",
+        )
+
+    return [
+        RecentImapMessageOut(
+            uid=entry.uid,
+            fetched_at=entry.fetched_at,
+            received_at=entry.received_at,
+            sender=entry.sender,
+            subject=entry.subject,
+            body_snippet=entry.body_snippet,
+            decision=entry.decision,
+            decision_reason=entry.decision_reason,
+        )
+        for entry in get_recent_messages(connection_id)
+    ]
 
 
 @router.post(

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
@@ -13,7 +14,7 @@ const CONNECTION_STATUS_TONE: Record<ConnectionStatus, "slate" | "green" | "red"
   revoked: "slate",
 };
 
-function CheckNowButton({ connectionId }: { connectionId: string }) {
+function CheckNowButton({ connectionId, canViewLog }: { connectionId: string; canViewLog: boolean }) {
   const { activeOrg } = useOrg();
   const queryClient = useQueryClient();
   const [result, setResult] = useState<string | null>(null);
@@ -27,15 +28,23 @@ function CheckNowButton({ connectionId }: { connectionId: string }) {
           : `Checked: ${res.fetched} new message${res.fetched === 1 ? "" : "s"}, ${res.accepted} counted`,
       );
       queryClient.invalidateQueries({ queryKey: ["connections", activeOrg?.id] });
+      queryClient.invalidateQueries({ queryKey: ["recent-imap-messages", activeOrg?.id, connectionId] });
     },
     onError: (err) => setResult(err instanceof ApiError ? err.message : "Could not check the mailbox."),
   });
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button variant="secondary" disabled={checkMutation.isPending} onClick={() => checkMutation.mutate()}>
-        {checkMutation.isPending ? "Checking…" : "Check now"}
-      </Button>
+      <div className="flex gap-2">
+        <Button variant="secondary" disabled={checkMutation.isPending} onClick={() => checkMutation.mutate()}>
+          {checkMutation.isPending ? "Checking…" : "Check now"}
+        </Button>
+        {canViewLog && (
+          <Link to={`/mailbox/${connectionId}/log`}>
+            <Button variant="secondary">View log</Button>
+          </Link>
+        )}
+      </div>
       {result && <span className="text-xs text-slate-500 dark:text-slate-400">{result}</span>}
     </div>
   );
@@ -126,7 +135,7 @@ function ConnectionsSection() {
               <div className="flex items-center gap-2">
                 <Badge tone={CONNECTION_STATUS_TONE[c.status]}>{c.status}</Badge>
                 {canCheckNow && c.status === "connected" && c.provider === "imap" && (
-                  <CheckNowButton connectionId={c.id} />
+                  <CheckNowButton connectionId={c.id} canViewLog={canManage} />
                 )}
                 {canManage && c.status !== "revoked" && (
                   <Button

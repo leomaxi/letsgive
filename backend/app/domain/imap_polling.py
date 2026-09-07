@@ -6,6 +6,7 @@ import html
 import imaplib
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
@@ -21,6 +22,56 @@ from app.domain.ingestion import IngestResult, ingest_message
 from app.domain.mailbox_providers import RawMessage
 
 logger = logging.getLogger("letsgive.imap")
+
+# In-memory only, deliberately never written to the database: a rolling
+# per-connection diagnostic trail of exactly what the IMAP poller fetched
+# and how the parser judged it, for an Owner/Finance officer to see *why* a
+# real deposit wasn't counted without guessing blind (see
+# GET .../connections/{id}/recent-messages in app/api/v1/connections.py).
+# Not persisted on purpose -- ContributionEvent deliberately has no
+# sender/subject/body column at all (spec 8, data minimization); this is a
+# live debugging aid for the same Owner/Finance roles who already receive
+# these emails directly in their own inbox, not a new place donor content
+# ends up retained. Resets on process restart and is capped per connection
+# so it can never grow into a de facto unbounded copy of the mailbox.
+_RECENT_LOG_MAX_PER_CONNECTION = 25
+_recent_messages: dict[str, deque] = {}
+
+
+@dataclass
+class RecentMessageLogEntry:
+    uid: str
+    fetched_at: datetime
+    received_at: datetime
+    sender: str
+    subject: str
+    body_snippet: str
+    decision: str
+    decision_reason: str | None
+
+
+def _record_recent_message(
+    connection_id: str, *, uid: str, message: RawMessage, decision: str, reason: str | None
+) -> None:
+    buffer = _recent_messages.setdefault(
+        connection_id, deque(maxlen=_RECENT_LOG_MAX_PER_CONNECTION)
+    )
+    buffer.appendleft(
+        RecentMessageLogEntry(
+            uid=uid,
+            fetched_at=utcnow(),
+            received_at=message.received_at,
+            sender=message.sender,
+            subject=message.subject,
+            body_snippet=message.body[:500],
+            decision=decision,
+            decision_reason=reason,
+        )
+    )
+
+
+def get_recent_messages(connection_id: str) -> list[RecentMessageLogEntry]:
+    return list(_recent_messages.get(connection_id, []))
 
 
 @dataclass
@@ -251,6 +302,13 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
 
     for item in fetched:
         result: IngestResult = await ingest_message(db, connection=connection, message=item.message)
+        _record_recent_message(
+            connection.id,
+            uid=item.uid,
+            message=item.message,
+            decision=result.event.decision.value,
+            reason=result.event.decision_reason,
+        )
         successfully_ingested_uids.append(item.uid)
         if (
             not result.already_processed

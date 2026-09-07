@@ -21,6 +21,7 @@ import type {
   ReconciliationItem,
   ReconciliationResolution,
   ReconciliationStatus,
+  RecentImapMessage,
   RequestApprovalResponse,
   SessionOperator,
   SessionReport,
@@ -212,6 +213,9 @@ export const connectionApi = {
 
   checkNow: (orgId: string, connectionId: string) =>
     api.post<ImapCheckNowResult>(`/v1/organizations/${orgId}/connections/${connectionId}/check-now`),
+
+  recentMessages: (orgId: string, connectionId: string) =>
+    api.get<RecentImapMessage[]>(`/v1/organizations/${orgId}/connections/${connectionId}/recent-messages`),
 };
 
 export interface CreateParserProfilePayload {

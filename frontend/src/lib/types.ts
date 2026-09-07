@@ -200,6 +200,17 @@ export interface ImapCheckNowResult {
   error: string | null;
 }
 
+export interface RecentImapMessage {
+  uid: string;
+  fetched_at: string;
+  received_at: string;
+  sender: string;
+  subject: string;
+  body_snippet: string;
+  decision: string;
+  decision_reason: string | null;
+}
+
 export interface ParserProfile {
   id: string;
   organization_id: string;

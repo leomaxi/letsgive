@@ -1098,6 +1098,30 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     `text/plain`-only extraction, the `ALL`-vs-`UNSEEN` search), confirmed the corresponding test
     went red with a real, readable failure, then restored the fix and reconfirmed all 128 backend
     tests green.
+- **Fixed a real production layout bug in `NotificationsBell`**: the dropdown was positioned
+  `absolute` relative to a wrapper inside `DashboardLayout`'s header row, which has
+  `overflow-x-auto` for narrow-viewport scrolling. Per the CSS overflow spec, setting one axis to
+  anything but `visible` forces the *other* axis to compute as `auto` too — so the header row was
+  silently clipping the dropdown and growing its own vertical scrollbar instead of letting the
+  panel float over the page, distorting the whole header. Fixed by portaling the panel to
+  `document.body` (`ReactDOM.createPortal`) with `position: fixed` coordinates computed from the
+  bell button's own `getBoundingClientRect()` on open, escaping the constrained ancestor entirely
+  — the standard fix for a dropdown/tooltip clipped by a scrollable container. Verified live: no
+  horizontal/vertical overflow on the header at a narrow (742px) viewport, panel renders and reads
+  correctly positioned under the bell.
+- **Added a mailbox diagnostic log** (`GET .../connections/{id}/recent-messages`, a "View log" page
+  per IMAP connection) after the Interac bug above turned out to need two rounds of guessing at
+  what the poller actually saw. Shows the last 25 fetched messages *exactly as fetched* — sender,
+  subject, a body snippet, and the parser's decision/reason — completely independent of whether
+  they were ultimately counted, so "did my email even arrive" and "what did the parser make of it"
+  are answerable without reading logs or guessing blind. Deliberately **in-memory only, never
+  persisted to the database** (`app/domain/imap_polling.py`'s `_recent_messages`, capped per
+  connection, resets on restart): `ContributionEvent` deliberately has no sender/subject/body
+  column at all (spec 8, data minimization), and this doesn't create a new place donor content
+  ends up retained — it's a live view for the same Owner/Finance roles who already receive these
+  emails directly in their own inbox, gated more tightly than the team-wide read access added
+  earlier (raw email content is more sensitive than the sanitized ledger data those endpoints
+  expose, so this one stays Owner/Finance-only, not opened to Media/Auditor).
 - The public `GET /display/{id}` projection page (built in backend Phase 4) is intentionally
   separate from this app — plain server-rendered HTML with no build step, which is the right shape
   for a page an OBS Browser Source points at. It isn't going to be ported into the React app.
