@@ -1183,3 +1183,12 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   supported reject_keywords server-side, just never exposed) so an existing profile's reject list
   can be fixed the same way its sender patterns always could be, without needing direct database
   access for this or any future keyword-list correction.
+- **Shortened the live-deposit polling delay**: once a real Interac deposit was finally counting
+  correctly, the next thing reported was that it felt slow to show up. The background IMAP poll
+  loop (`app/main.py`) ran every 60s hardcoded; now configurable via `LETSGIVE_IMAP_POLL_INTERVAL_SECONDS`
+  (`Settings.imap_poll_interval_seconds`, `app/core/config.py`), defaulting to 15s. Deliberately not
+  dropped lower than that by default: each interval does a real login/logout cycle against every
+  connected mailbox, and providers (Gmail included, visibly — see its own "new sign-in"/"app
+  password created" security-alert emails) treat a fresh login as a security-relevant event, not a
+  free API call. `POST .../connections/{id}/check-now` remains for on-demand instant checks
+  regardless of this interval.

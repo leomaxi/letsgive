@@ -13,8 +13,6 @@ from app.domain.imap_polling import poll_all_imap_connections
 
 logger = logging.getLogger("letsgive.imap")
 
-IMAP_POLL_INTERVAL_SECONDS = 60
-
 
 async def _imap_poll_loop() -> None:
     """Background task: periodically checks every connected IMAP mailbox for
@@ -24,13 +22,14 @@ async def _imap_poll_loop() -> None:
     (app/domain/realtime.py) -- a horizontally-scaled deployment would need
     to run this on exactly one worker, or move it to a real task queue.
     """
+    interval = get_settings().imap_poll_interval_seconds
     while True:
         try:
             async with AsyncSessionLocal() as db:
                 await poll_all_imap_connections(db)
         except Exception:  # noqa: BLE001 -- a bad poll cycle must not kill the loop
             logger.exception("IMAP poll loop iteration failed")
-        await asyncio.sleep(IMAP_POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
