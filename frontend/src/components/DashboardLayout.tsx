@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { useTheme } from "@/auth/ThemeContext";
@@ -58,6 +58,14 @@ export default function DashboardLayout() {
             )}
           </div>
           <div className="flex flex-shrink-0 items-center gap-4">
+            {user?.is_platform_admin && (
+              <Link
+                to="/admin/organizations"
+                className="flex-shrink-0 whitespace-nowrap text-sm font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+              >
+                Admin portal
+              </Link>
+            )}
             <NotificationsBell />
             <button
               onClick={toggleTheme}

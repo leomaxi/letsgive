@@ -26,8 +26,16 @@ class SessionStatus(str, enum.Enum):
 # Transitions Phase 2 implements. reconciling/closed are reachable only once
 # Phase 5 reconciliation exists, but the states are modeled now for schema stability.
 ALLOWED_TRANSITIONS: dict[SessionStatus, set[SessionStatus]] = {
-    SessionStatus.DRAFT: {SessionStatus.APPROVAL_REQUESTED},
-    SessionStatus.APPROVAL_REQUESTED: {SessionStatus.APPROVAL_REQUESTED, SessionStatus.AUTHORIZED},
+    # ENDED here (via the existing close_session endpoint, app/api/v1/sessions.py)
+    # is a cancel -- backing out of a session that was created, or approved,
+    # but never went live. Same underlying transition/audit action as closing
+    # a live session; only the frontend's button label differs.
+    SessionStatus.DRAFT: {SessionStatus.APPROVAL_REQUESTED, SessionStatus.ENDED},
+    SessionStatus.APPROVAL_REQUESTED: {
+        SessionStatus.APPROVAL_REQUESTED,
+        SessionStatus.AUTHORIZED,
+        SessionStatus.ENDED,
+    },
     SessionStatus.AUTHORIZED: {SessionStatus.LIVE, SessionStatus.ENDED},
     SessionStatus.LIVE: {SessionStatus.PAUSED, SessionStatus.ENDED},
     SessionStatus.PAUSED: {SessionStatus.LIVE, SessionStatus.ENDED},

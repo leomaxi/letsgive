@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import { adminApi, plansApi } from "@/lib/endpoints";
 import type { SubscriptionStatus } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Field, Spinner } from "@/components/ui";
+import { Badge, Button, Card, ErrorText, Field, Input, Spinner } from "@/components/ui";
 
 const STATUS_TONE: Record<SubscriptionStatus, "green" | "amber" | "red" | "slate"> = {
   trialing: "amber",
@@ -20,6 +20,8 @@ export default function AdminOrganizationDetailPage() {
   const queryClient = useQueryClient();
   const [planId, setPlanId] = useState("");
   const [subscriptionStatus, setSubscriptionStatus] = useState("");
+  const [planStartsAt, setPlanStartsAt] = useState("");
+  const [planExpiresAt, setPlanExpiresAt] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const orgQuery = useQuery({
@@ -34,10 +36,14 @@ export default function AdminOrganizationDetailPage() {
       adminApi.updateSubscription(orgId!, {
         plan_id: planId || undefined,
         subscription_status: (subscriptionStatus || undefined) as SubscriptionStatus | undefined,
+        plan_starts_at: planStartsAt || undefined,
+        plan_expires_at: planExpiresAt || undefined,
       }),
     onSuccess: () => {
       setPlanId("");
       setSubscriptionStatus("");
+      setPlanStartsAt("");
+      setPlanExpiresAt("");
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
       queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
@@ -83,6 +89,15 @@ export default function AdminOrganizationDetailPage() {
               </Badge>
             </dd>
           </div>
+          {org.plan_expires_at && (
+            <div className="flex justify-between">
+              <dt className="text-slate-500 dark:text-slate-400">Plan scheduled to expire</dt>
+              <dd className="text-amber-600 dark:text-amber-400">
+                {new Date(org.plan_expires_at).toLocaleDateString()} — reverts to Starter if not
+                renewed
+              </dd>
+            </div>
+          )}
           <div className="flex justify-between">
             <dt className="text-slate-500 dark:text-slate-400">Members</dt>
             <dd className="text-slate-700 dark:text-slate-300">{org.member_count}</dd>
@@ -147,9 +162,35 @@ export default function AdminOrganizationDetailPage() {
               </select>
             </Field>
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Plan starts" htmlFor="planStartsAt">
+              <Input
+                id="planStartsAt"
+                type="date"
+                value={planStartsAt}
+                onChange={(e) => setPlanStartsAt(e.target.value)}
+              />
+            </Field>
+            <Field label="Plan expires (optional)" htmlFor="planExpiresAt">
+              <Input
+                id="planExpiresAt"
+                type="date"
+                value={planExpiresAt}
+                onChange={(e) => setPlanExpiresAt(e.target.value)}
+              />
+            </Field>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            If a plan is being granted for a limited time, set an expiry — the organization reverts
+            to the Starter plan automatically if nobody renews it before then. Leave blank for an
+            open-ended grant.
+          </p>
           <ErrorText>{error}</ErrorText>
           <Button
-            disabled={(!planId && !subscriptionStatus) || updateMutation.isPending}
+            disabled={
+              (!planId && !subscriptionStatus && !planStartsAt && !planExpiresAt) ||
+              updateMutation.isPending
+            }
             onClick={() => updateMutation.mutate()}
           >
             {updateMutation.isPending ? "Saving…" : "Apply changes"}

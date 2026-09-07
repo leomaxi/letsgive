@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # seconds without a reason.
     imap_poll_interval_seconds: int = 15
 
+    # How often app/main.py's background loop checks for organizations whose
+    # admin-assigned plan_expires_at has passed (see app/domain/subscriptions.py
+    # ::revert_expired_plans). A scheduled plan grant lapsing an hour late
+    # isn't operationally meaningful the way a missed live deposit would be,
+    # so this doesn't need imap_poll_interval_seconds-level urgency.
+    plan_expiry_check_interval_seconds: int = 1800
+
 
 @lru_cache
 def get_settings() -> Settings:

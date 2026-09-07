@@ -52,6 +52,15 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     plan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("plans.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    # Record-keeping only -- when a platform admin's plan grant began. Doesn't
+    # gate anything; the plan applies immediately on assignment (see
+    # app/api/v1/admin.py::update_subscription). Not a deferred-activation
+    # trigger, unlike plan_expires_at below.
+    plan_starts_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # When set, app/domain/subscriptions.py::revert_expired_plans (polled by
+    # the background loop in app/main.py) reverts plan_id back to the Starter
+    # plan once this passes, unless a platform admin renews/changes it first.
+    plan_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         SAEnum(

@@ -366,6 +366,8 @@ export interface AdminOrganization {
   plan_key: string | null;
   plan_name: string | null;
   subscription_status: SubscriptionStatus;
+  plan_starts_at: string | null;
+  plan_expires_at: string | null;
   member_count: number;
   created_at: string;
 }

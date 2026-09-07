@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_platform_admin
@@ -59,7 +59,15 @@ async def list_organizations(
         .order_by(Organization.created_at.desc())
     )
     if search:
-        query = query.where(Organization.name.ilike(f"%{search}%"))
+        # Matches either the org's own name, or a current member's email --
+        # plans belong to organizations in this app's data model, so "find
+        # the user, assign them a plan" means finding their org first.
+        member_email_match = exists(
+            select(Membership.id)
+            .join(User, User.id == Membership.user_id)
+            .where(Membership.organization_id == Organization.id, User.email.ilike(f"%{search}%"))
+        )
+        query = query.where(or_(Organization.name.ilike(f"%{search}%"), member_email_match))
     result = await db.execute(query.limit(limit).offset(offset))
 
     return [
@@ -70,6 +78,8 @@ async def list_organizations(
             plan_key=plan_key,
             plan_name=plan_name,
             subscription_status=org.subscription_status,
+            plan_starts_at=org.plan_starts_at,
+            plan_expires_at=org.plan_expires_at,
             member_count=member_count or 0,
             created_at=org.created_at,
         )
@@ -114,6 +124,8 @@ async def get_organization(
         plan_key=plan.key if plan else None,
         plan_name=plan.name if plan else None,
         subscription_status=org.subscription_status,
+        plan_starts_at=org.plan_starts_at,
+        plan_expires_at=org.plan_expires_at,
         member_count=member_count_result.scalar_one(),
         created_at=org.created_at,
         grace_period_ends_at=org.grace_period_ends_at,
@@ -143,7 +155,12 @@ async def update_subscription(
     if org is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
 
-    before = {"plan_id": org.plan_id, "subscription_status": org.subscription_status.value}
+    before = {
+        "plan_id": org.plan_id,
+        "subscription_status": org.subscription_status.value,
+        "plan_starts_at": org.plan_starts_at.isoformat() if org.plan_starts_at else None,
+        "plan_expires_at": org.plan_expires_at.isoformat() if org.plan_expires_at else None,
+    }
 
     if payload.plan_id is not None:
         plan = await db.get(Plan, payload.plan_id)
@@ -152,6 +169,10 @@ async def update_subscription(
         org.plan_id = plan.id
     if payload.subscription_status is not None:
         org.subscription_status = payload.subscription_status
+    if payload.plan_starts_at is not None:
+        org.plan_starts_at = payload.plan_starts_at
+    if payload.plan_expires_at is not None:
+        org.plan_expires_at = payload.plan_expires_at
 
     await record_audit_event(
         db,
@@ -161,7 +182,12 @@ async def update_subscription(
         organization_id=org.id,
         actor_user_id=admin.id,
         before=before,
-        after={"plan_id": org.plan_id, "subscription_status": org.subscription_status.value},
+        after={
+            "plan_id": org.plan_id,
+            "subscription_status": org.subscription_status.value,
+            "plan_starts_at": org.plan_starts_at.isoformat() if org.plan_starts_at else None,
+            "plan_expires_at": org.plan_expires_at.isoformat() if org.plan_expires_at else None,
+        },
         ip_address=_client_ip(request),
     )
     await db.commit()

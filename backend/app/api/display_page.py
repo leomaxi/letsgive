@@ -69,9 +69,29 @@ _PAGE = """<!doctype html>
   }
   .el-progress-track { padding: 0 !important; }
   .el-progress-fill { height: 100%; transition: width 400ms ease; }
+  #celebration {
+    position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 0.5rem; text-align: center;
+    padding: 2rem; box-sizing: border-box; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(52,211,153,0.22), transparent 70%);
+  }
+  #celebration .emoji {
+    font-size: clamp(3rem, 10vw, 7rem); line-height: 1;
+    animation: celebrate-pop 900ms ease-out;
+  }
+  #celebration .message {
+    font-size: clamp(1.4rem, 4vw, 3rem); font-weight: 800; color: #34d399;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  }
+  @keyframes celebrate-pop {
+    0% { transform: scale(0.4); opacity: 0; }
+    60% { transform: scale(1.15); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
   @media (prefers-reduced-motion: reduce) {
     #count { transition: none; }
     .el-progress-fill { transition: none; }
+    #celebration .emoji { animation: none; }
   }
 </style>
 </head>
@@ -95,6 +115,11 @@ _PAGE = """<!doctype html>
   </main>
 
   <div id="template-stage" hidden aria-hidden="true"></div>
+
+  <div id="celebration" hidden aria-live="polite">
+    <div class="emoji" aria-hidden="true">🎉🎊🎉</div>
+    <div class="message">Target reached! We made it!</div>
+  </div>
 <script>
 (function () {
   const params = new URLSearchParams(location.search);
@@ -110,6 +135,7 @@ _PAGE = """<!doctype html>
   const statusDot = document.getElementById("statusDot");
   const statusText = document.getElementById("statusText");
   const templateStage = document.getElementById("template-stage");
+  const celebrationEl = document.getElementById("celebration");
 
   let lastCount = null;
   let endsAt = null;
@@ -200,6 +226,12 @@ _PAGE = """<!doctype html>
     return Math.max(0, Math.min(1, Number(state.total_amount) / Number(state.goal_amount)));
   }
 
+  function goalReached(state) {
+    if (state.goal_amount == null || !state.amount_visible || state.total_amount == null) return false;
+    if (Number(state.goal_amount) <= 0) return false;
+    return Number(state.total_amount) >= Number(state.goal_amount);
+  }
+
   function buildTemplateStage() {
     templateStage.innerHTML = "";
     templateStage.style.backgroundColor = template.canvas.background_color || "#0b1220";
@@ -283,6 +315,11 @@ _PAGE = """<!doctype html>
     } else {
       renderGeneric(state);
     }
+    // Persists for as long as the state stays at/above goal (not a one-shot
+    // fire-once effect) -- robust to a WebSocket reconnect landing after the
+    // threshold was already crossed, e.g. a projector/OBS source reloading
+    // mid-session.
+    celebrationEl.hidden = !goalReached(state);
     lastCount = state.contribution_count;
   }
 

@@ -552,6 +552,8 @@ class AdminOrganizationOut(BaseModel):
     plan_key: str | None
     plan_name: str | None
     subscription_status: SubscriptionStatus
+    plan_starts_at: datetime | None
+    plan_expires_at: datetime | None
     member_count: int
     created_at: datetime
 
@@ -565,15 +567,30 @@ class AdminOrganizationDetailOut(AdminOrganizationOut):
 class AdminSubscriptionUpdateRequest(BaseModel):
     plan_id: str | None = None
     subscription_status: SubscriptionStatus | None = None
+    # Record-keeping only, doesn't gate anything -- see Organization.plan_starts_at.
+    plan_starts_at: datetime | None = None
+    # When set, the background loop reverts plan_id back to Starter once this
+    # passes (app/domain/subscriptions.py::revert_expired_plans). Passing
+    # plan_id/subscription_status without this leaves the grant open-ended,
+    # same as before this feature existed.
+    plan_expires_at: datetime | None = None
 
     @model_validator(mode="after")
     def _require_at_least_one_field(self) -> "AdminSubscriptionUpdateRequest":
-        # field_validator wouldn't run at all if both fields are simply
+        # field_validator wouldn't run at all if all fields are simply
         # omitted (left at their None defaults) -- this needs a model-level
         # check so an all-empty request (which would silently no-op) is
         # rejected outright instead.
-        if self.plan_id is None and self.subscription_status is None:
-            raise ValueError("Provide at least one of plan_id or subscription_status.")
+        if (
+            self.plan_id is None
+            and self.subscription_status is None
+            and self.plan_starts_at is None
+            and self.plan_expires_at is None
+        ):
+            raise ValueError(
+                "Provide at least one of plan_id, subscription_status, plan_starts_at, "
+                "or plan_expires_at."
+            )
         return self
 
 

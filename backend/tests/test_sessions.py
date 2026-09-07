@@ -441,3 +441,65 @@ async def test_outsider_cannot_list_org_sessions(client: AsyncClient, db_session
         headers={"Authorization": f"Bearer {outsider_token}"},
     )
     assert resp.status_code == 404
+
+
+async def test_can_cancel_a_draft_session(client: AsyncClient, db_session: AsyncSession):
+    org, _, _, media_token = await _org_with_finance_and_media(client, db_session, "canceldraft")
+    session = await create_session(client, media_token, org["id"])
+    assert session["status"] == "draft"
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/close",
+        json={"expected_version": session["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ended"
+
+
+async def test_can_cancel_an_approval_requested_session(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    org, _, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "cancelrequested"
+    )
+    session = await create_session(client, media_token, org["id"])
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/request-approval",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    assert resp.json()["status"] == "approval_requested"
+    current_version = resp.json()["version"]
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/close",
+        json={"expected_version": current_version},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ended"
+
+
+async def test_can_cancel_an_authorized_but_not_yet_started_session(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    org, _, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "cancelauth"
+    )
+    session = await create_session(client, media_token, org["id"])
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    assert authorized["status"] == "authorized"
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/close",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ended"

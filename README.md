@@ -1250,3 +1250,52 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     `/billing` reflected the new plan, and `/audit` showed both admin actions attributed correctly —
     all with zero manual data wiring beyond the one `is_platform_admin` flag flip. 17 new backend
     tests; full suite (146 backend, 42 frontend) + typecheck/lint/build all green.
+- **Five more requests from live use of the admin portal and sessions**, most of them smaller than
+  they first looked because the backend already had the pieces:
+  - **Admin nav link**: a "Admin portal" link now shows in the tenant `DashboardLayout` header for
+    `is_platform_admin` accounts, so reaching admin duties doesn't require hand-typing `/admin` —
+    supplements (doesn't replace) `HomeRoute`'s existing auto-redirect on `/`.
+  - **Scheduled subscription plan grants**: `Organization.plan_starts_at`/`plan_expires_at`
+    (migration `0015`) let a platform admin grant a tenant a plan for a limited date range;
+    `plan_starts_at` is record-keeping only (the plan still applies immediately, same as the
+    existing manual override), but once `plan_expires_at` passes, a new background loop
+    (`_plan_expiry_loop` in `app/main.py`, same shape as `_imap_poll_loop`, calling
+    `app/domain/subscriptions.py::revert_expired_plans` every
+    `LETSGIVE_PLAN_EXPIRY_CHECK_INTERVAL_SECONDS`, default 30 min) reverts the org back to the
+    Starter plan automatically and records a `subscription.plan_expired` audit entry with no actor
+    (a system action, not an admin one). The admin org list/search (`GET /v1/admin/organizations`)
+    now also matches a current member's *email*, not just the org name — plans belong to
+    organizations in this app's data model, so "find the user, change their plan" means finding
+    their org first; no new per-user data model needed.
+  - **Session start/end date-time pickers**: `NewSessionPage.tsx` replaced the raw "duration in
+    minutes" number input with actual Start/End `datetime-local` pickers, computing
+    `duration_seconds` from their difference client-side (still submitted as the same field the
+    backend already expected — no API change). Deliberately **not** a scheduler that auto-starts a
+    session at the picked time — the operator still clicks "Start" manually after the existing
+    approval-code flow, confirmed with the user before building this, since real scheduling would
+    need a new background trigger interacting with that flow's timing.
+  - **Cancel a not-yet-live session**: `ALLOWED_TRANSITIONS` (`app/db/models/session.py`) now
+    allows `DRAFT` and `APPROVAL_REQUESTED` to reach `ENDED` (previously only
+    `AUTHORIZED`/`LIVE`/`PAUSED` could) — the existing `close_session` endpoint already handled any
+    state the transition table allowed, so this needed no new endpoint, just the table change plus
+    the missing "Cancel" buttons on `SessionDetailPage.tsx` for those three pre-live states.
+  - **Optional fundraising target + celebration**: turned out `Session.goal_enabled`/`goal_amount`
+    already existed end-to-end in the backend (model, create schema, operator/public schemas, the
+    public WebSocket broadcast) and the public display page already computed a progress fraction
+    and rendered a `progress_bar` template element — none of it was ever exposed in the
+    session-creation UI. Added the checkbox+amount field to `NewSessionPage.tsx`, a small progress
+    indicator to the operator console, and — the actually-new piece — a full-viewport celebration
+    overlay (`backend/app/api/display_page.py`) shown on the public projection page once
+    `total_amount >= goal_amount`, persisting for as long as that stays true (robust to a
+    WebSocket/OBS-source reconnect landing after the threshold was already crossed) rather than
+    firing once and disappearing.
+  - **Verified live**: created a session with the new date-time pickers (confirmed the computed
+    duration), canceled a draft session before it ever went live, set a $20 test-mode goal, and
+    confirmed both the operator console and the public `/display/{id}` page showed the "🎉 Target
+    reached!" celebration the instant a simulated deposit hit it. As admin, searched for a tenant by
+    a team member's email (not the org name) and successfully found their org, then scheduled a
+    plan change with an expiry date and confirmed the org detail page immediately showed "Plan
+    scheduled to expire ... reverts to Starter if not renewed." 6 new backend tests (3 in
+    `test_admin.py` for search-by-email and the expiry revert, both directions, 3 in
+    `test_sessions.py` for canceling from each pre-live state); full suite (152 backend, 42
+    frontend) + typecheck/lint/build all green.

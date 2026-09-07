@@ -1,6 +1,11 @@
+from datetime import datetime, timedelta, timezone
+
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.organization import Organization
+from app.domain.subscriptions import revert_expired_plans
 from tests.helpers import create_org, enable_mfa, make_platform_admin, register_and_login
 
 
@@ -139,3 +144,92 @@ async def test_admin_subscription_update_requires_a_field(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
+
+
+async def test_admin_can_search_organizations_by_member_email(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "distinctive-owner@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Findable By Email Org")
+    # An unrelated org whose name/members share nothing with the search term.
+    other_owner_token = await register_and_login(client, "someone-else@example.org")
+    await enable_mfa(client, other_owner_token)
+    await create_org(client, other_owner_token, "Unrelated Org")
+
+    admin_token = await _make_admin(client, db_session, "admin-search@example.org")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    resp = await client.get("/v1/admin/organizations?search=distinctive-owner", headers=headers)
+    assert resp.status_code == 200, resp.text
+    ids = [o["id"] for o in resp.json()]
+    assert ids == [org["id"]]
+
+
+async def test_admin_can_schedule_a_plan_expiry_and_it_reverts_to_starter(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-planexpiry@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Plan Expiry Org")
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    resp = await client.get("/v1/plans", headers=owner_headers)
+    plans = {p["key"]: p for p in resp.json()}
+
+    admin_token = await _make_admin(client, db_session, "admin-planexpiry@example.org")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    resp = await client.post(
+        f"/v1/admin/organizations/{org['id']}/subscription",
+        json={"plan_id": plans["growth"]["id"], "plan_expires_at": past},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["plan_key"] == "growth"
+    assert resp.json()["plan_expires_at"] is not None
+
+    reverted = await revert_expired_plans(db_session)
+    assert reverted == 1
+
+    result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
+    refreshed = result.scalar_one()
+    assert refreshed.plan_id == plans["starter"]["id"]
+    assert refreshed.plan_expires_at is None
+    assert refreshed.plan_starts_at is None
+
+    # Reflected back through the read API too, not just the DB row.
+    resp = await client.get(f"/v1/admin/organizations/{org['id']}", headers=admin_headers)
+    assert resp.json()["plan_key"] == "starter"
+    assert resp.json()["plan_expires_at"] is None
+
+    # A system-initiated revert has no actor -- distinguishable from an
+    # admin's own deliberate change in the tenant's own audit log.
+    resp = await client.get(f"/v1/organizations/{org['id']}/audit-logs", headers=owner_headers)
+    expired_entries = [e for e in resp.json() if e["action"] == "subscription.plan_expired"]
+    assert len(expired_entries) == 1
+    assert expired_entries[0]["actor_user_id"] is None
+
+
+async def test_revert_expired_plans_leaves_future_expiries_alone(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-planfuture@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Plan Future Org")
+
+    admin_token = await _make_admin(client, db_session, "admin-planfuture@example.org")
+    future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    resp = await client.post(
+        f"/v1/admin/organizations/{org['id']}/subscription",
+        json={"plan_expires_at": future},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    reverted = await revert_expired_plans(db_session)
+    assert reverted == 0
+
+    result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
+    assert result.scalar_one().plan_expires_at is not None

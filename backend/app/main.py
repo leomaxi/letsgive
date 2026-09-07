@@ -10,8 +10,10 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
 from app.domain.imap_polling import poll_all_imap_connections
+from app.domain.subscriptions import revert_expired_plans
 
 logger = logging.getLogger("letsgive.imap")
+subscriptions_logger = logging.getLogger("letsgive.subscriptions")
 
 
 async def _imap_poll_loop() -> None:
@@ -32,17 +34,36 @@ async def _imap_poll_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def _plan_expiry_loop() -> None:
+    """Background task: reverts any organization whose admin-assigned
+    plan_expires_at has passed back to the Starter plan. Same shape as
+    _imap_poll_loop above -- single-process, tolerant of a bad iteration.
+    """
+    interval = get_settings().plan_expiry_check_interval_seconds
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                await revert_expired_plans(db)
+        except Exception:  # noqa: BLE001 -- a bad cycle must not kill the loop
+            subscriptions_logger.exception("Plan expiry loop iteration failed")
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Skipped under pytest: the test suite runs against a per-test in-memory
     # SQLite engine reached only through a dependency override, not the
-    # module-level engine this loop would otherwise connect to -- starting it
-    # would just poll the wrong (or nonexistent) database every 60s.
-    task = None if "pytest" in sys.modules else asyncio.create_task(_imap_poll_loop())
+    # module-level engine these loops would otherwise connect to -- starting
+    # them would just poll the wrong (or nonexistent) database.
+    tasks = (
+        []
+        if "pytest" in sys.modules
+        else [asyncio.create_task(_imap_poll_loop()), asyncio.create_task(_plan_expiry_loop())]
+    )
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
 
 

@@ -153,6 +153,33 @@ export default function SessionDetailPage() {
           <div className="mt-1 text-3xl font-bold text-slate-900 dark:text-slate-100">
             {session.amount_visible ? formatMoney(session.total_amount, session.currency) : "Hidden"}
           </div>
+          {session.goal_enabled && session.goal_amount && (
+            <div className="mt-2">
+              {(() => {
+                const goal = Number(session.goal_amount);
+                const total = session.amount_visible && session.total_amount ? Number(session.total_amount) : 0;
+                const reached = session.amount_visible && total >= goal;
+                const pct = goal > 0 ? Math.min(100, (total / goal) * 100) : 0;
+                return (
+                  <>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
+                      <div
+                        className={`h-full rounded-full ${reached ? "bg-emerald-500" : "bg-brand-500"}`}
+                        style={{ width: `${session.amount_visible ? pct : 0}%` }}
+                      />
+                    </div>
+                    <div
+                      className={`mt-1 text-xs ${reached ? "font-medium text-emerald-600 dark:text-emerald-400" : "text-slate-400 dark:text-slate-500"}`}
+                    >
+                      {reached
+                        ? `🎉 Goal of ${formatMoney(session.goal_amount, session.currency)} reached!`
+                        : `Goal: ${formatMoney(session.goal_amount, session.currency)}`}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
         </Card>
         <Card>
           <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
@@ -186,6 +213,15 @@ export default function SessionDetailPage() {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               Waiting for a Media teammate to request finance approval.
             </p>
+          )}
+          {session.status === "draft" && canOperate && (
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => runAction(() => sessionApi.close(session.id, session.version))}
+            >
+              Cancel
+            </Button>
           )}
 
           {session.status === "approval_requested" && (
@@ -221,11 +257,29 @@ export default function SessionDetailPage() {
               )}
             </div>
           )}
+          {session.status === "approval_requested" && canOperate && (
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => runAction(() => sessionApi.close(session.id, session.version))}
+            >
+              Cancel
+            </Button>
+          )}
 
           {session.status === "authorized" && canOperate && (
-            <Button disabled={busy} onClick={() => runAction(() => sessionApi.start(session.id, session.version))}>
-              Start
-            </Button>
+            <>
+              <Button disabled={busy} onClick={() => runAction(() => sessionApi.start(session.id, session.version))}>
+                Start
+              </Button>
+              <Button
+                variant="danger"
+                disabled={busy}
+                onClick={() => runAction(() => sessionApi.close(session.id, session.version))}
+              >
+                Cancel
+              </Button>
+            </>
           )}
 
           {session.status === "live" && canOperate && (

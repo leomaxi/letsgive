@@ -351,6 +351,8 @@ export const supportTicketApi = {
 export interface AdminSubscriptionUpdatePayload {
   plan_id?: string;
   subscription_status?: SubscriptionStatus;
+  plan_starts_at?: string;
+  plan_expires_at?: string;
 }
 
 export const adminApi = {
