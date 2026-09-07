@@ -1474,3 +1474,23 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
     `journalctl -u letsgive-backend --since "X min ago" | grep -iE "idle|imap poll"` — this will now
     actually show something, letting the `"pushed"` vs `"timed_out"` outcomes and poll-fetch
     timestamps be compared directly against when the email actually landed.
+- **The new logging above deployed and immediately paid off — and found a third, still-unexplained,
+  ~74-second gap.** A real test against `letsgive.ca` produced exactly two log lines for one deposit:
+  `IMAP IDLE wait ... ended: pushed` at `00:15:39`, then `IMAP poll for connection ...: fetched=1
+  accepted=1` at `00:16:53` — 74 seconds apart. That gap sits entirely *between* the server pushing a
+  notification and the very next loop iteration's catch-up poll actually running, with no `sleep()`
+  anywhere on that path in the code as written — so 74 real seconds were spent either (a) waiting to
+  acquire `poll_imap_connection`'s per-connection lock (i.e. queued behind another trigger — the manual
+  button, or the slow 300s fallback loop happening to hit this same connection at the same moment), or
+  (b) inside the actual blocking IMAP connect/login/search/fetch call itself (the mailbox provider's own
+  response time). The two look identical from the outside; the existing logs couldn't distinguish them.
+  Added two more timing lines to close that gap: `poll_imap_connection` now logs how long it waited for
+  the lock (`app/domain/imap_polling.py`, only when >1s, so a normal fast-path poll stays silent), and
+  `_poll_imap_connection_locked` now logs how long the actual `_fetch_new_sync` IMAP round trip itself
+  took (only when >5s). Whichever one lights up next time will finally show whether this is lock
+  contention or the mailbox provider being slow. The user also reported having to manually refresh the
+  operator console repeatedly before the contribution count changed — plausibly just them refreshing
+  while waiting out this same 74-second backend gap rather than a separate WebSocket/cache bug (the
+  broadcast call and the operator console's periodic-refetch safety net were both already confirmed
+  working in earlier rounds), but not yet confirmed either way. Full suite (167 backend) unaffected —
+  purely additive logging, no behavior change. **Not deployed yet.**

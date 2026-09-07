@@ -6,6 +6,7 @@ import html
 import imaplib
 import logging
 import re
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -310,7 +311,19 @@ async def poll_imap_connection(db: AsyncSession, connection: MailboxConnection) 
     below -- two triggers racing the same mailbox's IMAP session/watermark at
     once produced a real unhandled-exception 500 in production.
     """
+    lock_wait_started = time.monotonic()
     async with _lock_for(connection.id):
+        lock_wait_seconds = time.monotonic() - lock_wait_started
+        if lock_wait_seconds > 1:
+            # Distinguishes "the fetch itself was slow" from "this trigger
+            # sat queued behind another one" -- the two look identical from
+            # outside, but only one of them means the lock/scheduling is the
+            # bottleneck rather than the IMAP round trip itself.
+            logger.info(
+                "IMAP poll for connection %s waited %.1fs for the per-connection lock",
+                connection.id,
+                lock_wait_seconds,
+            )
         return await _poll_imap_connection_locked(db, connection)
 
 
@@ -322,6 +335,7 @@ async def _poll_imap_connection_locked(
     if not connection.imap_host or not connection.imap_port or not connection.imap_password:
         return ImapPollSummary(fetched=0, accepted=0, error="IMAP connection is missing its credentials.")
 
+    fetch_started = time.monotonic()
     try:
         last_uid = int(connection.imap_last_uid) if connection.imap_last_uid is not None else None
         fetched, max_uid_seen = await asyncio.to_thread(
@@ -336,6 +350,17 @@ async def _poll_imap_connection_locked(
         connection.webhook_health = f"IMAP error: {exc}"[:255]
         await db.commit()
         return ImapPollSummary(fetched=0, accepted=0, error=str(exc))
+    fetch_seconds = time.monotonic() - fetch_started
+    if fetch_seconds > 5:
+        # The actual IMAP round trip (connect/login/select/search/fetch)
+        # taking this long -- as opposed to time spent waiting on the lock
+        # above, which is logged separately -- points at the mailbox
+        # provider's own response time, not anything in this app's control.
+        logger.info(
+            "IMAP fetch for connection %s took %.1fs (connect+login+search+fetch)",
+            connection.id,
+            fetch_seconds,
+        )
 
     accepted = 0
     successfully_ingested_uids: list[str] = []
