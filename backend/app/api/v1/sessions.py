@@ -35,6 +35,7 @@ from app.api.v1.schemas import (
     SessionOperatorOut,
     SessionPublicOut,
     SimulateDepositRequest,
+    UpdateGoalRequest,
     VerifyApprovalRequest,
     VisibilityRequest,
 )
@@ -534,6 +535,64 @@ async def extend_session(
         organization_id=session.organization_id,
         actor_user_id=current_user.id,
         after={"additional_seconds": payload.additional_seconds, "ends_at": session.ends_at.isoformat()},
+        ip_address=_client_ip(request),
+    )
+
+    await db.commit()
+    await db.refresh(session)
+    await broadcast_session_update(db, session)
+    return await _operator_response(db, session)
+
+
+@router.patch("/{session_id}/goal", response_model=SessionOperatorOut)
+async def update_goal(
+    session_id: str,
+    payload: UpdateGoalRequest,
+    request: Request,
+    session_membership: tuple[Session, Membership] = Depends(get_session_membership),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SessionOperatorOut:
+    session, membership = session_membership
+    require_roles(membership, Role.OWNER, Role.MEDIA, Role.FINANCE)
+    check_version(session, payload.expected_version)
+
+    if session.status not in (SessionStatus.LIVE, SessionStatus.PAUSED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The fundraising target can only be raised while the session is live or paused.",
+        )
+
+    if not session.goal_enabled or session.goal_amount is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This session doesn't have a fundraising target enabled.",
+        )
+
+    # Raising the target is allowed at any point, including after it's
+    # already been reached -- goal_reached is computed fresh from
+    # total >= goal_amount on every payload build (see _public_payload
+    # below), never a persisted one-way flag, so a higher goal_amount
+    # naturally "un-reaches" it with no special-case handling needed here.
+    if payload.goal_amount <= session.goal_amount:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The new target must be higher than the current target of {session.goal_amount}.",
+        )
+
+    before = session.goal_amount
+    session.goal_amount = payload.goal_amount
+    session.version += 1
+
+    await record_audit_event(
+        db,
+        action="session.goal_increased",
+        target_type="session",
+        target_id=session.id,
+        organization_id=session.organization_id,
+        actor_user_id=current_user.id,
+        before={"goal_amount": str(before)},
+        after={"goal_amount": str(session.goal_amount)},
         ip_address=_client_ip(request),
     )
 

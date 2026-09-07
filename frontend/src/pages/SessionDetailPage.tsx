@@ -41,6 +41,7 @@ export default function SessionDetailPage() {
   const [sentTo, setSentTo] = useState<string[]>([]);
   const [code, setCode] = useState("");
   const [extendMinutes, setExtendMinutes] = useState(5);
+  const [newGoalAmount, setNewGoalAmount] = useState("");
   const [depositAmount, setDepositAmount] = useState("20.00");
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
 
@@ -182,6 +183,30 @@ export default function SessionDetailPage() {
                         ? `🎉 Goal of ${formatMoney(session.goal_amount, session.currency)} reached!`
                         : `Goal: ${formatMoney(session.goal_amount, session.currency)}`}
                     </div>
+                    {(session.status === "live" || session.status === "paused") && canOperate && (
+                      <div className="mt-2 flex items-center gap-1">
+                        <Input
+                          type="number"
+                          className="w-24"
+                          placeholder="New target"
+                          min={goal}
+                          step="0.01"
+                          value={newGoalAmount}
+                          onChange={(e) => setNewGoalAmount(e.target.value)}
+                        />
+                        <Button
+                          variant="secondary"
+                          disabled={busy || !newGoalAmount || Number(newGoalAmount) <= goal}
+                          onClick={() =>
+                            runAction(() => sessionApi.updateGoal(session.id, session.version, newGoalAmount)).then(
+                              () => setNewGoalAmount("")
+                            )
+                          }
+                        >
+                          Raise target
+                        </Button>
+                      </div>
+                    )}
                   </>
                 );
               })()}

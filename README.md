@@ -1397,3 +1397,22 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   Regression-tested the disciplined way: reverted the backend fix, confirmed the new test reproduces
   the exact production symptom (`goal_reached` stuck `False` despite the total clearing the goal),
   restored, confirmed green. Full suite (159 backend, 42 frontend) + typecheck/lint/build all green.
+- **A fundraising target can now be raised mid-session** — a real congregation exceeded its goal and
+  wanted to keep it climbing rather than sit on a "goal reached" banner for the rest of the service.
+  New `PATCH /v1/sessions/{id}/goal` (`app/api/v1/sessions.py::update_goal`, gated by the same
+  `OWNER`/`MEDIA`/`FINANCE` roles and `expected_version` optimistic-locking pattern every other
+  session mutation already uses) accepts a new `goal_amount`, requires the session be `LIVE` or
+  `PAUSED` (mirroring `/extend`'s status gate), requires a goal already be enabled on the session (this
+  is deliberately scoped to *raising an existing target*, not enabling one mid-session — a different,
+  unrequested feature), and rejects anything that isn't strictly higher than the current target with a
+  409. No special-casing was needed for "already reached" — `goal_reached` (both on the public payload
+  and the operator console's own progress bar) is recomputed from `total >= goal_amount` on every
+  response, never a persisted one-way flag, so simply raising `goal_amount` naturally un-reaches it.
+  Frontend: a small inline "New target" input + "Raise target" button next to the existing goal
+  progress bar in `SessionDetailPage.tsx`, visible to the same operator roles while live/paused,
+  disabled unless the typed value actually exceeds the current goal. 2 new backend tests
+  (`test_sessions.py`): raising past an already-reached goal succeeds and the new value sticks
+  (confirmed via both the raise response and a follow-up `GET .../operator`), a non-increase and a
+  decrease both get rejected with 409, and attempting to raise a goal on a session with no goal
+  enabled at all also gets rejected with 409. Full suite (161 backend, 42 frontend) +
+  lint/build all green. **Not yet deployed or tested against a real live session.**

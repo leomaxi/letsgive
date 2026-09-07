@@ -184,6 +184,12 @@ export const sessionApi = {
       amount_visible: amountVisible,
     }),
 
+  updateGoal: (sessionId: string, expectedVersion: number, goalAmount: string) =>
+    api.patch<SessionOperator>(`/v1/sessions/${sessionId}/goal`, {
+      expected_version: expectedVersion,
+      goal_amount: goalAmount,
+    }),
+
   close: (sessionId: string, expectedVersion: number) =>
     api.post<SessionOperator>(`/v1/sessions/${sessionId}/close`, {
       expected_version: expectedVersion,

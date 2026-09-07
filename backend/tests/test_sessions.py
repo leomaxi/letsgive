@@ -221,6 +221,98 @@ async def test_public_payload_reveals_goal_reached_even_when_amount_is_hidden(
     assert operator["total_amount"] == "2.02"
 
 
+async def test_goal_can_be_raised_while_live_even_after_it_was_reached(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    org, owner_token, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "goalraise"
+    )
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "organization_id": org["id"],
+            "contribution_method": "e-transfer",
+            "duration_seconds": 1800,
+            "test_mode": True,
+            "goal_enabled": True,
+            "goal_amount": "2.00",
+        },
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    session = resp.json()
+
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    live = resp.json()
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/simulate-deposit",
+        json={"amount": "2.50"},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    # The $2.00 goal has already been reached by a $2.50 deposit -- raising
+    # it further must still work; goal_reached is recomputed from
+    # total >= goal_amount on every payload, not a one-way flag.
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/goal",
+        json={"goal_amount": "5.00", "expected_version": live["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    raised = resp.json()
+    assert raised["goal_amount"] == "5.00"
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    assert resp.json()["goal_amount"] == "5.00"
+
+    # Not an increase -- rejected.
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/goal",
+        json={"goal_amount": "5.00", "expected_version": raised["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 409, resp.text
+
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/goal",
+        json={"goal_amount": "1.00", "expected_version": raised["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 409, resp.text
+
+
+async def test_goal_cannot_be_raised_when_no_goal_is_enabled(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    org, owner_token, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "goalnone"
+    )
+    session = await create_session(client, media_token, org["id"], test_mode=True)
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    live = resp.json()
+
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/goal",
+        json={"goal_amount": "10.00", "expected_version": live["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 409, resp.text
+
+
 async def test_owner_can_create_and_run_a_session_solo(
     client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
 ):

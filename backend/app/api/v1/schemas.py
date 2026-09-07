@@ -259,6 +259,10 @@ class VisibilityRequest(ExpectedVersionRequest):
     amount_visible: bool
 
 
+class UpdateGoalRequest(ExpectedVersionRequest):
+    goal_amount: Decimal = Field(gt=0)
+
+
 class DisplayTokenResponse(BaseModel):
     display_token: str
     expires_in_minutes: int
