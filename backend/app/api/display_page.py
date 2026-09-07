@@ -334,11 +334,13 @@ _PAGE = """<!doctype html>
   }, 250);
 
   let retryDelayMs = 1000;
+  let activeSocket = null;
   function connect() {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const url = proto + location.host + "/v1/sessions/" + sessionId + "/live?token="
       + encodeURIComponent(token);
     const ws = new WebSocket(url);
+    activeSocket = ws;
 
     ws.onopen = function () {
       retryDelayMs = 1000;
@@ -349,6 +351,7 @@ _PAGE = """<!doctype html>
       try { render(JSON.parse(evt.data)); } catch (e) { /* ignore malformed frame */ }
     };
     ws.onclose = function () {
+      if (activeSocket === ws) activeSocket = null;
       statusDot.className = "dot down";
       statusText.textContent = "reconnecting";
       setTimeout(connect, retryDelayMs);
@@ -356,6 +359,21 @@ _PAGE = """<!doctype html>
     };
     ws.onerror = function () { ws.close(); };
   }
+
+  // This channel carries no periodic "still alive" pulse of its own -- a
+  // browser tab only ever hears about a NEW contribution, never a
+  // heartbeat -- so a single silently-dropped frame (a brief network blip
+  // that never actually closed the socket, unlike a real disconnect, which
+  // ws.onclose above already recovers from) would otherwise leave a
+  // projector/OBS source stuck on a stale count indefinitely, with nothing
+  // to ever notice or correct it. Force a clean reconnect periodically so a
+  // fresh, correct snapshot (the same initial_payload the socket already
+  // sends right after subscribing) is re-synced even if nothing else would
+  // have surfaced the gap -- the operator console's own polling safety net
+  // exists for exactly this reason, this channel just never had one.
+  setInterval(function () {
+    if (activeSocket) activeSocket.close();
+  }, 45000);
 
   async function init() {
     try {
