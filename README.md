@@ -1156,3 +1156,30 @@ hardcoded in `vite.config.ts` since there's only ever one backend to talk to in 
   button pair on `MailboxSettingsPage`, shown only for `revoked` connections, mirroring the existing
   parser-profile delete UI. 5 new backend tests cover the happy path, the not-yet-revoked 400, the
   has-ledger-history 400, the Media-role 403, and cross-org 404.
+- **Fixed a real production bug: every single real Interac deposit was being auto-rejected**, once
+  the mailbox connection itself was working. The diagnostic log (added two rounds ago specifically
+  for this class of problem) showed the exact reason: "Message contains reject language
+  (request/cancellation/reminder/etc)." `DEFAULT_REJECT_KEYWORDS` (`app/db/models/parser_profile.py`)
+  included `"request"` — and Interac's own standard security-disclaimer footer, present verbatim on
+  *every* transactional email they send (deposits included), reads "Interac will never **request**
+  access to this email notification from you." The reject-keyword check
+  (`app/domain/parsing.py::_has_any_keyword`) is a plain case-insensitive substring match over the
+  whole subject+body with no scoping, so that one boilerplate sentence alone was enough to reject
+  100% of real Interac deposits, unconditionally, regardless of anything else in the message.
+  Removed `"request"`/`"requested"` from the default list — a genuine "money request" notification
+  (as opposed to a deposit) still gets excluded correctly on its own, since it never mentions any of
+  `DEFAULT_CREDIT_KEYWORDS` either and is caught by the separate no-credit-intent check instead.
+  Regression-tested the disciplined way: a new test built from the real captured email's actual
+  disclaimer text, confirmed red (reproducing the exact same rejection reason string from the user's
+  own screenshot) with the old keyword list, green with the fix.
+  **Important operational gap this fix does *not* close on its own**: `DEFAULT_REJECT_KEYWORDS` is
+  only a default applied when a *new* `ParserProfile` row is created — it's copied into the row at
+  insert time, not read live from the code. Any parser profile created before this fix (including
+  the org's existing "Scotia bank" profile) still has the old `["request", "requested", ...]` list
+  baked into its own database row and needs to be edited directly, not just redeployed past. There
+  was previously no UI for this at all (`ParserProfileEditForm` only exposed name/sender
+  patterns/confidence/active) — added a "Reject keywords" field to it
+  (`frontend/src/pages/MailboxSettingsPage.tsx`, `PATCH .../parser-profiles/{id}`, already
+  supported reject_keywords server-side, just never exposed) so an existing profile's reject list
+  can be fixed the same way its sender patterns always could be, without needing direct database
+  access for this or any future keyword-list correction.

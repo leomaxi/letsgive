@@ -6,9 +6,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 DEFAULT_CREDIT_KEYWORDS = ["deposited", "credited", "received", "sent you"]
+# Deliberately does NOT include "request"/"requested": Interac's own standard
+# transactional-email footer ("Interac will never request access to this
+# email notification from you.") appears verbatim on every one of their
+# notifications, deposits included -- so those two words previously rejected
+# every real Interac deposit outright, unconditionally, regardless of the
+# email's actual content. A genuine "money request" notification (as opposed
+# to a deposit) still gets excluded correctly without them: it never mentions
+# any of DEFAULT_CREDIT_KEYWORDS either, so it's caught by the separate
+# "no unambiguous credit-intent language" check in app/domain/parsing.py
+# instead of needing to be named here.
 DEFAULT_REJECT_KEYWORDS = [
-    "request",
-    "requested",
     "cancel",
     "cancelled",
     "reminder",

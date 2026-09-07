@@ -323,6 +323,7 @@ function ParserProfileEditForm({
 
   const [name, setName] = useState(profile.name);
   const [senderPatterns, setSenderPatterns] = useState(profile.sender_patterns.join(", "));
+  const [rejectKeywords, setRejectKeywords] = useState(profile.reject_keywords.join(", "));
   const [confidenceThreshold, setConfidenceThreshold] = useState(profile.confidence_threshold);
   const [isActive, setIsActive] = useState(profile.is_active);
   const [error, setError] = useState<string | null>(null);
@@ -332,6 +333,10 @@ function ParserProfileEditForm({
       parserProfileApi.update(activeOrg!.id, profile.id, {
         name,
         sender_patterns: senderPatterns
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        reject_keywords: rejectKeywords
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
@@ -369,6 +374,19 @@ function ParserProfileEditForm({
           value={senderPatterns}
           onChange={(e) => setSenderPatterns(e.target.value)}
         />
+      </Field>
+      <Field label="Reject keywords (comma-separated)" htmlFor={`editReject-${profile.id}`}>
+        <Input
+          id={`editReject-${profile.id}`}
+          value={rejectKeywords}
+          onChange={(e) => setRejectKeywords(e.target.value)}
+        />
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          A message containing any of these words anywhere in its subject or body is treated as
+          not a real deposit (a cancellation, reminder, or money request) and excluded. Keep this
+          list narrow — a word that also shows up in your bank's ordinary security/legal
+          boilerplate will silently reject every real deposit that provider sends.
+        </p>
       </Field>
       <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
         <input

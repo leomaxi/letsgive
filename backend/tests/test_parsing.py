@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from app.db.models.parser_profile import (
     DEFAULT_AMOUNT_PATTERN,
@@ -76,3 +77,33 @@ def test_a_profile_with_multiple_patterns_takes_the_most_specific_one_that_match
     # listed first.
     result = parse_message(MESSAGE, _profile(["@fakebank.com", "deposits@fakebank.com"]))
     assert result.match_specificity == 2
+
+
+def test_a_real_interac_deposit_is_not_rejected_by_its_own_boilerplate():
+    # Real production bug: every Interac transactional email -- deposit
+    # notifications included -- carries this exact disclaimer sentence in
+    # its footer, verbatim, regardless of what the email is actually about.
+    # DEFAULT_REJECT_KEYWORDS used to include "request", which matched this
+    # boilerplate and rejected every single real Interac deposit outright,
+    # unconditionally, no matter what the rest of the message said. Body
+    # text below is taken directly from a real deposit notification.
+    message = RawMessage(
+        provider_message_id="msg-interac-real",
+        sender="notify@payments.interac.ca",
+        subject=(
+            "Interac e-Transfer: You've received $1.00 from LEONARD MAXIMUS MENSAH "
+            "and it has been automatically deposited."
+        ),
+        body=(
+            "Funds Deposited! $1.00 Your funds have been automatically deposited into "
+            "your account at Scotiabank. Amount: $1.00 (CAD) For your security, please "
+            "do not forward this email as it contains confidential information meant "
+            "only for you. Interac will never request access to this email notification "
+            "from you. Click here to manage notification preferences from this contact."
+        ),
+        received_at=datetime.now(timezone.utc),
+    )
+    result = parse_message(message, _profile(["notify@payments.interac.ca"]))
+    assert result.has_credit_intent is True
+    assert result.amount == Decimal("1.00")
+    assert result.reason is None

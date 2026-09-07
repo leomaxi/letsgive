@@ -232,6 +232,7 @@ export interface CreateParserProfilePayload {
 export interface UpdateParserProfilePayload {
   name?: string;
   sender_patterns?: string[];
+  reject_keywords?: string[];
   confidence_threshold?: number;
   is_active?: boolean;
 }
