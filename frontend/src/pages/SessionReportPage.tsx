@@ -5,7 +5,7 @@ import { useOrg } from "@/auth/OrgContext";
 import { ApiError, getToken } from "@/lib/api";
 import { reportApi } from "@/lib/endpoints";
 import type { ApiErrorBody } from "@/lib/types";
-import { Badge, Button, Card, Spinner } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, PageHeader, Spinner, StatCard } from "@/components/ui";
 
 async function downloadReportFile(
   url: string,
@@ -77,14 +77,15 @@ export default function SessionReportPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <Link to={`/sessions/${sessionId}`} className="text-sm text-brand-600 hover:text-brand-700">
-            ← Back to session
+      <PageHeader
+        title="Session report"
+        description={
+          <Link to={`/sessions/${sessionId}`} className="text-brand-600 hover:text-brand-700">
+            Back to session
           </Link>
-          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Session report</h1>
-        </div>
-        <div className="flex gap-2">
+        }
+        actions={
+          <>
           <Button
             variant="secondary"
             onClick={() =>
@@ -111,28 +112,28 @@ export default function SessionReportPage() {
           >
             Download PDF
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
       {downloadError && <p className="text-sm text-red-600 dark:text-red-400">{downloadError}</p>}
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Validated
-          </div>
-          <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-slate-100">
-            {report.validated_count} contribution{report.validated_count === 1 ? "" : "s"}
-          </div>
-          {report.validated_amount && (
-            <div className="text-sm text-slate-500 dark:text-slate-400">{report.validated_amount}</div>
-          )}
-        </Card>
-        <Card>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Mailbox connection
-          </div>
-          {report.connection_health ? (
-            <div className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard
+          label="Validated count"
+          value={report.validated_count}
+          detail={`${report.validated_count === 1 ? "contribution" : "contributions"} accepted after corrections`}
+          tone="green"
+        />
+        <StatCard
+          label="Validated amount"
+          value={report.validated_amount ?? "—"}
+          detail="Net accepted amount for the session."
+          tone="blue"
+        />
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+          <div className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Mailbox connection</div>
+            {report.connection_health ? (
+            <div className="mt-2 text-sm text-slate-700 dark:text-slate-300">
               <Badge tone={report.connection_health.status === "connected" ? "green" : "red"}>
                 {report.connection_health.status}
               </Badge>
@@ -145,15 +146,16 @@ export default function SessionReportPage() {
           ) : (
             <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">No mailbox connection was bound.</div>
           )}
-        </Card>
+        </div>
       </div>
 
+      <div className="grid gap-6 lg:grid-cols-2">
       <Card>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           Excluded messages
         </h2>
         {Object.keys(report.excluded_counts).length === 0 ? (
-          <p className="text-sm text-slate-500 dark:text-slate-400">None.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">None</p>
         ) : (
           <ul className="space-y-1 text-sm">
             {Object.entries(report.excluded_counts).map(([reason, count]) => (
@@ -171,7 +173,7 @@ export default function SessionReportPage() {
           Corrections
         </h2>
         {report.corrections.length === 0 ? (
-          <p className="text-sm text-slate-500 dark:text-slate-400">None.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">None</p>
         ) : (
           <ul className="space-y-2 text-sm">
             {report.corrections.map((c) => (
@@ -185,13 +187,14 @@ export default function SessionReportPage() {
           </ul>
         )}
       </Card>
+      </div>
 
       <Card>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           Approval history
         </h2>
         {report.approval_history.length === 0 ? (
-          <p className="text-sm text-slate-500 dark:text-slate-400">None.</p>
+          <EmptyState title="No approval history" description="Approval requests for this session will appear here." />
         ) : (
           <ul className="space-y-2 text-sm">
             {report.approval_history.map((a) => (

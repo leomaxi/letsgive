@@ -2,7 +2,7 @@ import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { useTheme } from "@/auth/ThemeContext";
-import { Badge } from "@/components/ui";
+import { Badge, Select } from "@/components/ui";
 import BrandMark from "@/components/BrandMark";
 import NotificationsBell from "@/components/NotificationsBell";
 
@@ -31,15 +31,21 @@ export default function DashboardLayout() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
-      <header className="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 overflow-x-auto px-4 py-3">
-          <div className="flex flex-shrink-0 items-center gap-6">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-brand-700 focus:shadow-lg dark:focus:bg-slate-800 dark:focus:text-brand-300"
+      >
+        Skip to content
+      </a>
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-700 dark:bg-slate-800/95">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-4">
             <BrandMark className="flex-shrink-0" />
             {organizations.length > 0 && (
-              <label className="flex flex-shrink-0 items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <label className="min-w-0 flex-1 sm:flex-none">
                 <span className="sr-only">Active organization</span>
-                <select
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                <Select
+                  className="min-w-48 max-w-full py-1.5"
                   value={activeOrg?.id ?? ""}
                   onChange={(e) => setActiveOrgId(e.target.value)}
                 >
@@ -48,7 +54,7 @@ export default function DashboardLayout() {
                       {org.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             )}
             {activeOrg && (
@@ -57,7 +63,7 @@ export default function DashboardLayout() {
               </Badge>
             )}
           </div>
-          <div className="flex flex-shrink-0 items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3 lg:justify-end">
             {user?.is_platform_admin && (
               <Link
                 to="/admin/organizations"
@@ -71,7 +77,7 @@ export default function DashboardLayout() {
               onClick={toggleTheme}
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              className="flex-shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+              className="flex-shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
             >
               {theme === "dark" ? (
                 <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -92,21 +98,21 @@ export default function DashboardLayout() {
             </span>
             <button
               onClick={logout}
-              className="flex-shrink-0 whitespace-nowrap text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+              className="flex-shrink-0 whitespace-nowrap text-sm font-medium text-slate-600 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:text-slate-300 dark:hover:text-slate-100"
             >
               Sign out
             </button>
           </div>
         </div>
         {activeOrg && (
-          <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4">
+          <nav className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4" aria-label="Primary">
             {visibleNavItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 end={item.end}
                 className={({ isActive }) =>
-                  `flex-shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium ${
+                  `flex-shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
                     isActive
                       ? "border-brand-600 text-brand-700 dark:border-brand-400 dark:text-brand-400"
                       : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -119,7 +125,7 @@ export default function DashboardLayout() {
           </nav>
         )}
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main id="main-content" className="mx-auto max-w-7xl px-4 py-8">
         <Outlet />
       </main>
     </div>

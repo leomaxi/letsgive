@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
-import { orgApi } from "@/lib/endpoints";
+import { orgApi, sessionApi } from "@/lib/endpoints";
 import type { Role } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Field, Input, Label, Spinner } from "@/components/ui";
+import { Badge, Button, Card, ErrorText, Field, Input, Label, PageHeader, Select, Spinner, StatCard } from "@/components/ui";
 import JoinRequestsCard from "@/components/JoinRequestsCard";
 
 const ROLES: Role[] = ["owner", "finance", "media", "auditor"];
@@ -32,6 +33,12 @@ export default function OrgHomePage() {
     queryFn: () => orgApi.listMembers(activeOrg!.id),
     enabled: !!activeOrg,
   });
+  const sessionsQuery = useQuery({
+    queryKey: ["sessions", activeOrg?.id],
+    queryFn: () => sessionApi.listForOrg(activeOrg!.id),
+    enabled: !!activeOrg,
+    refetchInterval: 5000,
+  });
 
   const inviteMutation = useMutation({
     mutationFn: () => orgApi.inviteMember(activeOrg!.id, email, role),
@@ -55,14 +62,49 @@ export default function OrgHomePage() {
   }
 
   const isOwner = activeOrg.role === "owner";
+  const canManageBilling = activeOrg.role === "owner" || activeOrg.role === "finance";
+  const canCreateSession =
+    activeOrg.role === "owner" || activeOrg.role === "media" || activeOrg.role === "finance";
+  const sessions = sessionsQuery.data ?? [];
+  const liveSessions = sessions.filter((session) => session.status === "live");
+  const setupSessions = sessions.filter((session) =>
+    ["draft", "approval_requested", "authorized"].includes(session.status)
+  );
+  const connectedSessions = sessions.filter((session) => !!session.mailbox_connection_id).length;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">{activeOrg.name}</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          {activeOrg.country} · {activeOrg.currency} · {activeOrg.timezone}
-        </p>
+      <PageHeader
+        title={activeOrg.name}
+        description={`${activeOrg.country} · ${activeOrg.currency} · ${activeOrg.timezone}`}
+        actions={
+          canCreateSession ? (
+            <Link to="/sessions/new">
+              <Button>New session</Button>
+            </Link>
+          ) : null
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard
+          label="Live sessions"
+          value={liveSessions.length}
+          detail={liveSessions.length > 0 ? "Open the session page before presenting." : "No active monitoring right now."}
+          tone={liveSessions.length > 0 ? "green" : "slate"}
+        />
+        <StatCard
+          label="In setup"
+          value={setupSessions.length}
+          detail="Drafts, approvals, and ready-to-start sessions."
+          tone={setupSessions.length > 0 ? "amber" : "slate"}
+        />
+        <StatCard
+          label="Mailbox linked"
+          value={`${connectedSessions}/${sessions.length || 0}`}
+          detail="Sessions with a connected deposit inbox."
+          tone={connectedSessions > 0 ? "blue" : "slate"}
+        />
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -88,6 +130,16 @@ export default function OrgHomePage() {
               </div>
             )}
           </dl>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {canManageBilling && (
+              <Link to="/billing">
+                <Button variant="secondary">Manage billing</Button>
+              </Link>
+            )}
+            <Link to="/support">
+              <Button variant="secondary">Contact support</Button>
+            </Link>
+          </div>
         </Card>
 
         <Card>
@@ -160,9 +212,8 @@ export default function OrgHomePage() {
             </Field>
             <div>
               <Label htmlFor="inviteRole">Role</Label>
-              <select
+              <Select
                 id="inviteRole"
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                 value={role}
                 onChange={(e) => setRole(e.target.value as Role)}
               >
@@ -171,7 +222,7 @@ export default function OrgHomePage() {
                     {r}
                   </option>
                 ))}
-              </select>
+              </Select>
               {(role === "owner" || role === "finance") && (
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                   This role requires the invitee to already have MFA enabled on their account.

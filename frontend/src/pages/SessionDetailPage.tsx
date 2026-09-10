@@ -7,7 +7,7 @@ import { sessionApi } from "@/lib/endpoints";
 import { useCountdown } from "@/lib/useCountdown";
 import { useOperatorSocket } from "@/lib/useOperatorSocket";
 import type { SessionStatus } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Input, Spinner } from "@/components/ui";
+import { Badge, Button, Card, ErrorText, Input, PageHeader, Spinner, StatCard } from "@/components/ui";
 
 const STATUS_TONE: Record<SessionStatus, "slate" | "green" | "amber" | "blue" | "red"> = {
   draft: "slate",
@@ -105,17 +105,23 @@ export default function SessionDetailPage() {
 
   const canRequestApproval = role === "owner" || role === "media";
   const canToggleVisibility = role === "finance";
+  const sessionTitle = `${session.contribution_method.replace("-", " ")} session`;
+  const displayStatus = session.status.replace("_", " ");
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold capitalize text-slate-900 dark:text-slate-100">
-            {session.contribution_method.replace("-", " ")} session
-          </h1>
-          <p className="text-xs text-slate-400 dark:text-slate-500">{session.id}</p>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        title={sessionTitle}
+        description={
+          <>
+            {displayStatus}
+            {session.test_mode ? " · test mode" : ""}
+            {" · "}
+            <span className="font-mono text-xs">{session.id}</span>
+          </>
+        }
+        actions={
+          <>
           {(role === "owner" || role === "finance" || role === "auditor") && (
             <Link
               to={`/sessions/${session.id}/report`}
@@ -125,12 +131,13 @@ export default function SessionDetailPage() {
             </Link>
           )}
           {session.test_mode && <Badge tone="amber">test mode</Badge>}
-          <Badge tone={STATUS_TONE[session.status]}>{session.status.replace("_", " ")}</Badge>
+          <Badge tone={STATUS_TONE[session.status]}>{displayStatus}</Badge>
           {canOperate && (
             <Badge tone={live ? "green" : "slate"}>{live ? "connected" : "reconnecting…"}</Badge>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {session.operator_warning && (
         <div
@@ -143,13 +150,13 @@ export default function SessionDetailPage() {
       <ErrorText>{error}</ErrorText>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Contributions
-          </div>
-          <div className="mt-1 text-3xl font-bold text-slate-900 dark:text-slate-100">{session.contribution_count}</div>
-        </Card>
-        <Card>
+        <StatCard
+          label="Contributions"
+          value={session.contribution_count}
+          detail={session.mailbox_connection_id ? "Counting from the linked mailbox." : "No mailbox linked to this session."}
+          tone={session.status === "live" ? "green" : "slate"}
+        />
+        <Card className="p-5">
           <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Amount</div>
           <div className="mt-1 text-3xl font-bold text-slate-900 dark:text-slate-100">
             {session.amount_visible ? formatMoney(session.total_amount, session.currency) : "Hidden"}
@@ -213,12 +220,12 @@ export default function SessionDetailPage() {
             </div>
           )}
         </Card>
-        <Card>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Time remaining
-          </div>
-          <div className="mt-1 text-3xl font-bold text-slate-900 dark:text-slate-100">{countdown ?? "—"}</div>
-        </Card>
+        <StatCard
+          label="Time remaining"
+          value={countdown ?? "—"}
+          detail={session.ends_at ? `Ends ${new Date(session.ends_at).toLocaleTimeString()}` : "Timer starts when the session starts."}
+          tone={session.status === "live" ? "blue" : "slate"}
+        />
       </div>
 
       <Card>

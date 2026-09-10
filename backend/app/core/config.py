@@ -41,14 +41,13 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
 
     # How often app/main.py's background loop re-checks every connected IMAP
-    # mailbox for new deposit notifications. This is now only a slower
-    # safety net, not the primary mechanism -- real-time detection comes
-    # from per-mailbox IMAP IDLE watchers (app/domain/imap_idle.py), which
-    # get notified by the server the instant new mail arrives instead of
-    # asking repeatedly. This loop exists as defense in depth for a watcher
-    # that silently died, and as a backstop for a provider that doesn't
-    # support IDLE at all -- it doesn't need IDLE-level urgency.
-    imap_poll_interval_seconds: int = 300
+    # mailbox for new deposit notifications. This is a safety net for a
+    # watcher that silently died; per-mailbox IMAP IDLE watchers usually
+    # detect deposits faster, and now self-verify every few seconds even when
+    # the provider's push notification does not arrive promptly. Keep this
+    # backstop short enough that "email is visible but count is stale" has a
+    # bounded recovery window.
+    imap_poll_interval_seconds: int = 60
 
     # How often app/main.py's background loop checks for organizations whose
     # admin-assigned plan_expires_at has passed (see app/domain/subscriptions.py

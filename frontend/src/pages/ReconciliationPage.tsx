@@ -5,7 +5,7 @@ import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { reconciliationApi, sessionApi } from "@/lib/endpoints";
 import type { ReconciliationItem, ReconciliationResolution, ReconciliationStatus } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Input, Spinner } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, ErrorText, Input, PageHeader, SegmentedControl, Select, Spinner, StatCard } from "@/components/ui";
 
 function ReversalPicker({
   sessionId,
@@ -32,8 +32,7 @@ function ReversalPicker({
       ) : acceptedEvents.length === 0 ? (
         <p className="text-xs text-slate-400 dark:text-slate-500">No accepted contributions in this session yet.</p>
       ) : (
-        <select
-          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+        <Select
           value={value}
           onChange={(e) => onChange(e.target.value)}
         >
@@ -43,7 +42,7 @@ function ReversalPicker({
               {e.amount} {e.currency} · {new Date(e.received_at).toLocaleString()}
             </option>
           ))}
-        </select>
+        </Select>
       )}
     </div>
   );
@@ -168,6 +167,8 @@ export default function ReconciliationPage() {
     queryFn: () => reconciliationApi.listForOrg(activeOrg!.id, statusFilter),
     enabled: !!activeOrg,
   });
+  const items = query.data ?? [];
+  const amountReviewCount = items.filter((item) => item.evidence.amount != null).length;
 
   if (!activeOrg) return null;
 
@@ -177,38 +178,50 @@ export default function ReconciliationPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Reconciliation</h1>
-        <div className="flex gap-1 rounded-md border border-slate-200 bg-white p-1 text-sm dark:border-slate-700 dark:bg-slate-800">
-          {(["pending", "resolved"] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
-              className={`rounded px-3 py-1 ${
-                statusFilter === s
-                  ? "bg-brand-600 text-white"
-                  : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
-              }`}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+      <PageHeader
+        title="Reconciliation"
+        description="Review messages that could not be counted automatically."
+        actions={
+          <SegmentedControl
+            value={statusFilter}
+            options={[
+              { value: "pending", label: "Pending" },
+              { value: "resolved", label: "Resolved" },
+            ]}
+            onChange={setStatusFilter}
+          />
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard
+          label={statusFilter === "pending" ? "Waiting review" : "Resolved"}
+          value={items.length}
+          tone={statusFilter === "pending" && items.length > 0 ? "amber" : "slate"}
+        />
+        <StatCard label="With amount" value={amountReviewCount} tone="blue" />
+        <StatCard
+          label="Resolver"
+          value={canResolve ? "Finance" : "Read only"}
+          detail={canResolve ? "You can accept, exclude, reverse, or mark duplicate." : "Finance can resolve these items."}
+          tone={canResolve ? "green" : "slate"}
+        />
       </div>
 
       {query.isLoading ? (
         <div className="flex justify-center py-12">
           <Spinner className="h-6 w-6 text-brand-600" />
         </div>
-      ) : query.data?.length === 0 ? (
-        <Card className="text-sm text-slate-500 dark:text-slate-400">
-          {statusFilter === "pending" ? "Nothing waiting for review." : "No resolved items yet."}
-        </Card>
+      ) : items.length === 0 ? (
+        <EmptyState
+          title={statusFilter === "pending" ? "Nothing waiting for review" : "No resolved items yet"}
+          description={statusFilter === "pending" ? "Messages that need a decision will appear here." : "Resolved reconciliation decisions will appear here for audit context."}
+        />
       ) : (
         <div className="space-y-3">
-          {query.data?.map((item) => (
+          {items.map((item) => (
             <Card key={item.id}>
-              <div className="flex items-start justify-between">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
                 <div>
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{item.reason}</p>
                   <Link
@@ -225,7 +238,9 @@ export default function ReconciliationPage() {
                     </p>
                   )}
                 </div>
-                <Badge tone={item.status === "pending" ? "amber" : "slate"}>{item.status}</Badge>
+                <div className="flex items-start sm:justify-end">
+                  <Badge tone={item.status === "pending" ? "amber" : "slate"}>{item.status}</Badge>
+                </div>
               </div>
 
               {item.status === "pending" ? (

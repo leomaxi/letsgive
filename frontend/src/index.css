@@ -11,3 +11,16 @@ body,
 body {
   @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-900 dark:text-slate-100;
 }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: theme("colors.slate.300") transparent;
+}
+
+.dark * {
+  scrollbar-color: theme("colors.slate.600") transparent;
+}
+
+::selection {
+  @apply bg-brand-100 text-brand-900 dark:bg-brand-800 dark:text-brand-50;
+}

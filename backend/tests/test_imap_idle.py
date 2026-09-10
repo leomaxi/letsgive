@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.mailbox_connection import MailboxConnection
 from app.domain import imap_idle
-from app.domain.imap_idle import _connect_and_idle_sync
+from app.domain.imap_idle import _IDLE_TIMEOUT_SECONDS, _connect_and_idle_sync
 from app.domain.imap_polling import poll_imap_connection
 from tests.helpers import create_org, enable_mfa, register_and_login
 
@@ -18,6 +18,13 @@ async def _owner_org(client: AsyncClient, suffix: str) -> tuple[str, dict]:
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, f"Org {suffix}")
     return owner_token, org
+
+
+def test_idle_timeout_bounds_visible_deposit_delay_when_push_is_flaky():
+    # The email can be visible in the mailbox before IMAP IDLE wakes the app.
+    # Keep the watcher's self-verification cadence short so a missed push
+    # notification doesn't leave the live count stale for minutes.
+    assert _IDLE_TIMEOUT_SECONDS <= 20
 
 
 # --- poll_imap_connection's per-connection lock -----------------------------

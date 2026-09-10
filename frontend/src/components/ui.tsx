@@ -1,4 +1,11 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, LabelHTMLAttributes, ReactNode } from "react";
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  LabelHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes,
+  TextareaHTMLAttributes,
+} from "react";
 
 export function Button({
   className = "",
@@ -25,6 +32,24 @@ export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInpu
   );
 }
 
+export function Select({ className = "", ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      className={`w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${className}`}
+      {...props}
+    />
+  );
+}
+
+export function Textarea({ className = "", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={`w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 ${className}`}
+      {...props}
+    />
+  );
+}
+
 export function Label({ className = "", ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
   return (
     <label
@@ -43,12 +68,105 @@ export function Field({ label, htmlFor, children }: { label: string; htmlFor: st
   );
 }
 
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">{title}</h1>
+        {description && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{description}</p>}
+      </div>
+      {actions && <div className="flex flex-shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
 export function Card({ className = "", children }: { className?: string; children: ReactNode }) {
   return (
     <div
       className={`rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800 ${className}`}
     >
       {children}
+    </div>
+  );
+}
+
+export function EmptyState({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-10 text-center dark:border-slate-700 dark:bg-slate-800">
+      <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
+      <div className="mx-auto mt-1 max-w-md text-sm text-slate-500 dark:text-slate-400">{description}</div>
+      {action && <div className="mt-4 flex justify-center">{action}</div>}
+    </div>
+  );
+}
+
+export function StatCard({
+  label,
+  value,
+  detail,
+  tone = "slate",
+}: {
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+  tone?: "slate" | "green" | "amber" | "blue";
+}) {
+  const accents = {
+    slate: "border-slate-200 dark:border-slate-700",
+    green: "border-emerald-200 dark:border-emerald-800",
+    amber: "border-amber-200 dark:border-amber-800",
+    blue: "border-blue-200 dark:border-blue-800",
+  };
+  return (
+    <div className={`rounded-lg border bg-white p-5 shadow-sm dark:bg-slate-800 ${accents[tone]}`}>
+      <div className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">{label}</div>
+      <div className="mt-1 text-3xl font-bold text-slate-900 dark:text-slate-100">{value}</div>
+      {detail && <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">{detail}</div>}
+    </div>
+  );
+}
+
+export function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="inline-flex gap-1 rounded-md border border-slate-200 bg-white p-1 text-sm dark:border-slate-700 dark:bg-slate-800">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={`rounded px-3 py-1 font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-brand-500 ${
+            value === option.value
+              ? "bg-brand-600 text-white"
+              : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

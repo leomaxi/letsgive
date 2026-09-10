@@ -4,17 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { connectionApi, displayTemplateApi, sessionApi } from "@/lib/endpoints";
-import { Button, Card, ErrorText, Field, Input, Label } from "@/components/ui";
+import { Button, Card, ErrorText, Field, Input, Label, PageHeader, Select } from "@/components/ui";
 
 const CONTRIBUTION_METHODS = ["e-transfer", "bank-transfer", "mobile-money", "other"];
 const MAX_DURATION_SECONDS = 6 * 60 * 60;
-
-function toLocalDatetimeInputValue(date: Date): string {
-  // datetime-local inputs want "YYYY-MM-DDTHH:mm" in the *local* timezone --
-  // toISOString() is UTC, so build it from the local getters instead.
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
+const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 
 function formatDuration(totalSeconds: number): string {
   if (totalSeconds <= 0) return "";
@@ -43,10 +37,7 @@ export default function NewSessionPage() {
   });
 
   const [contributionMethod, setContributionMethod] = useState(CONTRIBUTION_METHODS[0]);
-  const [startAt, setStartAt] = useState(() => toLocalDatetimeInputValue(new Date()));
-  const [endAt, setEndAt] = useState(() =>
-    toLocalDatetimeInputValue(new Date(Date.now() + 30 * 60 * 1000))
-  );
+  const [durationMinutes, setDurationMinutes] = useState(30);
   const [connectionId, setConnectionId] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [testMode, setTestMode] = useState(false);
@@ -55,14 +46,10 @@ export default function NewSessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const durationSeconds = Math.round(
-    (new Date(endAt).getTime() - new Date(startAt).getTime()) / 1000
-  );
+  const durationSeconds = Math.round(durationMinutes * 60);
   const durationError =
-    !startAt || !endAt
-      ? null
-      : durationSeconds <= 0
-        ? "End must be after start."
+    durationSeconds <= 0
+        ? "Duration must be at least 1 minute."
         : durationSeconds > MAX_DURATION_SECONDS
           ? "Sessions can't run longer than 6 hours."
           : null;
@@ -78,6 +65,7 @@ export default function NewSessionPage() {
   }
 
   const connectedConnections = connectionsQuery.data?.filter((c) => c.status === "connected") ?? [];
+  const defaultTemplate = templatesQuery.data?.find((t) => t.is_default);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -107,18 +95,18 @@ export default function NewSessionPage() {
   }
 
   return (
-    <div className="mx-auto max-w-lg">
+    <div className="mx-auto max-w-3xl space-y-6">
+      <PageHeader
+        title="New session"
+        description="Prepare the session now; approval and the live start happen from the session page."
+      />
       <Card>
-        <h1 className="mb-1 text-xl font-semibold text-slate-900 dark:text-slate-100">New session</h1>
-        <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">
-          You'll send a finance approval code before monitoring can begin.
-        </p>
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
+          <div className="grid gap-4 md:grid-cols-2">
           <div>
             <Label htmlFor="method">Contribution method</Label>
-            <select
+            <Select
               id="method"
-              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               value={contributionMethod}
               onChange={(e) => setContributionMethod(e.target.value)}
             >
@@ -127,39 +115,43 @@ export default function NewSessionPage() {
                   {m}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Start" htmlFor="startAt">
+          <Field label="Duration" htmlFor="durationMinutes">
               <Input
-                id="startAt"
-                type="datetime-local"
+                id="durationMinutes"
+                type="number"
+                min={1}
+                max={360}
                 required
-                value={startAt}
-                onChange={(e) => setStartAt(e.target.value)}
-              />
-            </Field>
-            <Field label="End" htmlFor="endAt">
-              <Input
-                id="endAt"
-                type="datetime-local"
-                required
-                value={endAt}
-                onChange={(e) => setEndAt(e.target.value)}
+                value={durationMinutes}
+                onChange={(e) => setDurationMinutes(Number(e.target.value))}
               />
             </Field>
           </div>
+          <div className="flex flex-wrap gap-2">
+            {DURATION_PRESETS.map((minutes) => (
+              <Button
+                key={minutes}
+                type="button"
+                variant={durationMinutes === minutes ? "primary" : "secondary"}
+                className="px-3 py-1.5"
+                onClick={() => setDurationMinutes(minutes)}
+              >
+                {minutes < 60 ? `${minutes} min` : formatDuration(minutes * 60)}
+              </Button>
+            ))}
+          </div>
           <p className={`text-xs ${durationError ? "text-red-600 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}`}>
-            {durationError ?? (durationSeconds > 0 ? `Duration: ${formatDuration(durationSeconds)}` : "")}
+            {durationError ?? `The countdown starts when this session is approved and started. Planned duration: ${formatDuration(durationSeconds)}.`}
           </p>
 
           {connectedConnections.length > 0 && (
             <div>
               <Label htmlFor="connection">Mailbox connection</Label>
-              <select
+              <Select
                 id="connection"
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                 value={connectionId}
                 onChange={(e) => setConnectionId(e.target.value)}
               >
@@ -171,7 +163,7 @@ export default function NewSessionPage() {
                     {c.mailbox}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           )}
           {connectedConnections.length === 0 && !connectionsQuery.isLoading && (
@@ -184,9 +176,8 @@ export default function NewSessionPage() {
           {templatesQuery.data && templatesQuery.data.length > 0 && (
             <div>
               <Label htmlFor="template">Display template</Label>
-              <select
+              <Select
                 id="template"
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                 value={templateId}
                 onChange={(e) => setTemplateId(e.target.value)}
               >
@@ -199,7 +190,12 @@ export default function NewSessionPage() {
                     {t.is_default ? " (default)" : ""}
                   </option>
                 ))}
-              </select>
+              </Select>
+              {defaultTemplate && !templateId && (
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Using default template: {defaultTemplate.name}
+                </p>
+              )}
             </div>
           )}
 

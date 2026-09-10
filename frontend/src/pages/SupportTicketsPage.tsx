@@ -5,7 +5,7 @@ import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { supportTicketApi } from "@/lib/endpoints";
 import type { SupportTicketStatus } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Field, Input, Spinner } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, ErrorText, Field, Input, PageHeader, Spinner, StatCard, Textarea } from "@/components/ui";
 
 const STATUS_TONE: Record<SupportTicketStatus, "amber" | "blue" | "green" | "slate"> = {
   open: "amber",
@@ -26,6 +26,9 @@ export default function SupportTicketsPage() {
     queryFn: () => supportTicketApi.listForOrg(activeOrg!.id),
     enabled: !!activeOrg,
   });
+  const tickets = ticketsQuery.data ?? [];
+  const openCount = tickets.filter((ticket) => ticket.status === "open" || ticket.status === "in_progress").length;
+  const resolvedCount = tickets.filter((ticket) => ticket.status === "resolved" || ticket.status === "closed").length;
 
   const createMutation = useMutation({
     mutationFn: () => supportTicketApi.create(activeOrg!.id, subject, body),
@@ -47,24 +50,30 @@ export default function SupportTicketsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Support</h1>
-      <p className="text-sm text-slate-500 dark:text-slate-400">
-        Need help troubleshooting something? Open a ticket and our team will follow up here.
-      </p>
+      <PageHeader
+        title="Support"
+        description="Open a ticket, track replies, and keep troubleshooting in one place."
+      />
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard label="Active tickets" value={openCount} tone={openCount > 0 ? "amber" : "slate"} />
+        <StatCard label="Resolved" value={resolvedCount} tone="green" />
+        <StatCard label="Total" value={tickets.length} tone="blue" />
+      </div>
 
       <Card>
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        <h2 className="mb-4 text-sm font-semibold uppercase text-slate-500 dark:text-slate-400">
           Your tickets
         </h2>
         {ticketsQuery.isLoading ? (
           <Spinner className="h-5 w-5 text-brand-600" />
-        ) : ticketsQuery.data && ticketsQuery.data.length > 0 ? (
+        ) : tickets.length > 0 ? (
           <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">
-            {ticketsQuery.data.map((ticket) => (
+            {tickets.map((ticket) => (
               <li key={ticket.id}>
                 <Link
                   to={`/support/${ticket.id}`}
-                  className="flex items-center justify-between py-3 hover:text-brand-700 dark:hover:text-brand-400"
+                  className="grid gap-3 py-3 hover:text-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:hover:text-brand-400 sm:grid-cols-[1fr_auto]"
                 >
                   <div>
                     <div className="font-medium text-slate-700 dark:text-slate-300">{ticket.subject}</div>
@@ -78,12 +87,12 @@ export default function SupportTicketsPage() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-slate-500 dark:text-slate-400">No tickets yet.</p>
+          <EmptyState title="No tickets yet" description="When something needs attention, open a ticket below and replies will stay attached to this organization." />
         )}
       </Card>
 
       <Card>
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        <h2 className="mb-4 text-sm font-semibold uppercase text-slate-500 dark:text-slate-400">
           Open a new ticket
         </h2>
         <form onSubmit={onSubmit} className="space-y-3" noValidate>
@@ -97,11 +106,10 @@ export default function SupportTicketsPage() {
             />
           </Field>
           <Field label="Describe the issue" htmlFor="body">
-            <textarea
+            <Textarea
               id="body"
               required
               rows={4}
-              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               value={body}
               onChange={(e) => setBody(e.target.value)}
               placeholder="The more detail, the faster we can help."

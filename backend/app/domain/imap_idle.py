@@ -26,12 +26,13 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-# How long a single IDLE wait blocks before this task refreshes it on its
-# own, comfortably under the ~29-minute RFC 2177-recommended renewal window
-# so the connection never gets timed out server-side for staying idle too
-# long. Whether idle_check returns because real mail arrived or because this
-# elapsed, the next step is identical -- ask poll_imap_connection what's new.
-_IDLE_TIMEOUT_SECONDS = 1400
+# How long a single IDLE wait blocks before this task verifies the mailbox
+# again. IDLE is still the fast path when the provider reliably pushes a new
+# mail notification, but real Gmail/IMAP deployments have shown that "the
+# email is visible in the inbox" can happen without our IDLE wait waking
+# promptly. Keeping this short bounds the user-visible deposit delay even
+# when the provider's push path is flaky.
+_IDLE_TIMEOUT_SECONDS = 20
 # Cadence for a mailbox whose provider doesn't support IDLE at all (rare,
 # but real for some smaller/self-hosted providers) -- still much tighter
 # than app/main.py's slower fallback loop, since this is the per-mailbox
@@ -55,7 +56,7 @@ _watchers: dict[str, asyncio.Task] = {}
 # explicit lock; the GIL makes a single dict item assignment/deletion atomic
 # enough for that, and this follows the same pattern. Lets stop_watching /
 # stop_all_watchers force-unblock a socket read that could otherwise block
-# for up to _IDLE_TIMEOUT_SECONDS (~23 minutes) -- see _force_disconnect.
+# for up to _IDLE_TIMEOUT_SECONDS -- see _force_disconnect.
 _active_clients: dict[str, IMAPClient] = {}
 
 
@@ -152,8 +153,8 @@ def _connect_and_idle_sync(
     The caller's next step (a catch-up poll, then re-idle) is identical for
     "pushed" and "timed_out" either way, but the distinction is logged --
     it's the only way to tell from the logs whether real push notifications
-    are actually arriving or this mailbox is quietly relying on the
-    ~23-minute timeout the whole time.
+    are actually arriving or this mailbox is quietly relying on periodic
+    self-verification instead.
 
     Registers itself in _active_clients for the duration of the IDLE wait so
     _force_disconnect (called from the event loop thread, e.g. on shutdown)
@@ -243,10 +244,10 @@ async def _watch_connection_iteration(connection_id: str) -> bool:
     # The session above is already closed -- the long IDLE wait below
     # deliberately holds no database connection open across it. A MySQL
     # server's own idle-connection timeout (or a proxy/pooler in front of
-    # it) can kill a connection that just sits open-but-unused for up to
-    # _IDLE_TIMEOUT_SECONDS (~23 minutes); the next query on it then fails
-    # with a "server has gone away"-style error instead of a clean
-    # reconnect -- a real production failure this split fixes.
+    # it) can kill a connection that just sits open-but-unused for too long;
+    # the next query on it then fails with a "server has gone away"-style
+    # error instead of a clean reconnect -- a real production failure this
+    # split fixes.
     try:
         idle_outcome = await asyncio.to_thread(
             _connect_and_idle_sync,
@@ -268,11 +269,11 @@ async def _watch_connection_iteration(connection_id: str) -> bool:
         return False
 
     # The one line that actually answers "is IDLE working" -- "pushed" means
-    # the server itself notified us before the ~23-minute timeout; a string
+    # the server itself notified us before the verification timeout; a string
     # of "timed_out" entries for a mailbox that should be receiving mail
     # means real push notifications aren't arriving even though IDLE was
-    # negotiated, and new mail is only ever being caught by the next
-    # re-poll-on-timeout cycle or the slow app/main.py fallback loop.
+    # negotiated, and new mail is being caught by the next self-verification
+    # poll or the slower app/main.py fallback loop.
     logger.info("IMAP IDLE wait for %s ended: %s", connection_id, idle_outcome)
 
     if idle_outcome == "not_supported":

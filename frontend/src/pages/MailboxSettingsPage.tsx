@@ -5,7 +5,7 @@ import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
 import { connectionApi, parserProfileApi } from "@/lib/endpoints";
 import type { ConnectionStatus, ParserProfile } from "@/lib/types";
-import { Badge, Button, Card, ErrorText, Field, Input, Spinner } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, ErrorText, Field, Input, PageHeader, Spinner, StatCard } from "@/components/ui";
 
 const CONNECTION_STATUS_TONE: Record<ConnectionStatus, "slate" | "green" | "red" | "amber"> = {
   pending: "amber",
@@ -72,6 +72,9 @@ function ConnectionsSection() {
     queryFn: () => connectionApi.listForOrg(activeOrg!.id),
     enabled: !!activeOrg,
   });
+  const connections = connectionsQuery.data ?? [];
+  const connectedCount = connections.filter((c) => c.status === "connected").length;
+  const needsAttentionCount = connections.filter((c) => c.status === "error" || c.status === "revoked").length;
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -120,22 +123,29 @@ function ConnectionsSection() {
   }
 
   return (
-    <Card>
-      <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        Mailbox connections
-      </h2>
-      <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
-        A session needs a connected mailbox to receive live deposit notifications; without one it
-        can still run in test mode.
-      </p>
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard label="Connected inboxes" value={connectedCount} tone={connectedCount > 0 ? "green" : "slate"} />
+        <StatCard label="Needs attention" value={needsAttentionCount} tone={needsAttentionCount > 0 ? "amber" : "slate"} />
+        <StatCard label="Total connections" value={connections.length} tone="blue" />
+      </div>
 
+      <Card>
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold uppercase text-slate-500 dark:text-slate-400">
+          Mailbox connections
+        </h2>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Connect the deposit inbox that receives bank or e-transfer notifications.
+        </p>
+      </div>
       {connectionsQuery.isLoading ? (
         <Spinner className="h-5 w-5 text-brand-600" />
-      ) : connectionsQuery.data && connectionsQuery.data.length > 0 ? (
+      ) : connections.length > 0 ? (
         <ul className="mb-4 divide-y divide-slate-100 text-sm dark:divide-slate-700">
-          {connectionsQuery.data.map((c) => (
-            <li key={c.id} className="flex items-center justify-between py-2">
-              <div>
+          {connections.map((c) => (
+            <li key={c.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto] lg:items-center">
+              <div className="min-w-0">
                 <div className="text-slate-700 dark:text-slate-300">{c.mailbox}</div>
                 <div className="text-xs text-slate-400 dark:text-slate-500">
                   {c.provider}
@@ -145,7 +155,7 @@ function ConnectionsSection() {
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                 <Badge tone={CONNECTION_STATUS_TONE[c.status]}>{c.status}</Badge>
                 {canCheckNow && c.status === "connected" && c.provider === "imap" && (
                   <CheckNowButton connectionId={c.id} canViewLog={canManage} />
@@ -196,7 +206,10 @@ function ConnectionsSection() {
           ))}
         </ul>
       ) : (
-        <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">No mailbox connections yet.</p>
+        <EmptyState
+          title="No mailbox connected"
+          description="Connect an inbox before a real live session so deposits can be counted automatically."
+        />
       )}
       <ErrorText>{deleteError}</ErrorText>
 
@@ -308,6 +321,7 @@ function ConnectionsSection() {
       )}
       <ErrorText>{error}</ErrorText>
     </Card>
+    </div>
   );
 }
 
@@ -356,7 +370,7 @@ function ParserProfileEditForm({
         <Field label="Profile name" htmlFor={`editName-${profile.id}`}>
           <Input id={`editName-${profile.id}`} value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Confidence threshold (0–1)" htmlFor={`editConfidence-${profile.id}`}>
+        <Field label="Confidence threshold" htmlFor={`editConfidence-${profile.id}`}>
           <Input
             id={`editConfidence-${profile.id}`}
             type="number"
@@ -463,9 +477,9 @@ function ParserProfilesSection() {
 
   return (
     <Card>
-      <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        Parser profiles
-      </h2>
+          <h2 className="mb-1 text-sm font-semibold uppercase text-slate-500 dark:text-slate-400">
+            Parser profiles
+          </h2>
       <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
         Which sender addresses count as your bank/payment provider, and how confident a match needs
         to be before a deposit counts automatically.
@@ -540,7 +554,7 @@ function ParserProfilesSection() {
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
-          <Field label="Confidence threshold (0–1)" htmlFor="confidence">
+          <Field label="Confidence threshold" htmlFor="confidence">
             <Input
               id="confidence"
               type="number"
@@ -584,7 +598,10 @@ export default function MailboxSettingsPage() {
   // each gate their own create/edit/delete controls to Owner/Finance.
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Mailbox &amp; parsing</h1>
+      <PageHeader
+        title="Mailbox & parsing"
+        description="Connect the inbox, define trusted senders, and check what the parser sees."
+      />
       <ConnectionsSection />
       <ParserProfilesSection />
     </div>
