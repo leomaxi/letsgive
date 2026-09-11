@@ -428,6 +428,41 @@ async def test_wrong_code_locks_after_max_attempts(
     assert resp.json()["detail"] == "code_locked"
 
 
+async def test_pending_session_payload_exposes_active_approval_for_reloaded_browser(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    org, _, _, media_token = await _org_with_finance_and_media(client, db_session, "reloadapproval")
+    session = await create_session(client, media_token, org["id"])
+
+    requested = await client.post(
+        f"/v1/sessions/{session['id']}/request-approval",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert requested.status_code == 200, requested.text
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    reloaded = resp.json()
+    assert reloaded["status"] == "approval_requested"
+    assert reloaded["active_approval_id"] == requested.json()["approval_id"]
+    assert reloaded["active_approval_expires_at"] == requested.json()["expires_at"]
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/verify",
+        json={
+            "approval_id": reloaded["active_approval_id"],
+            "code": notifier.latest_code_for(session["id"]),
+        },
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "authorized"
+    assert resp.json()["active_approval_id"] is None
+
+
 async def test_expired_code_rejected(
     client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
 ):

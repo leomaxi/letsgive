@@ -16,6 +16,8 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+MXROUTE_SMTP_HOST = "tuesday.mxrouting.net"
+
 
 class Notifier(Protocol):
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None: ...
@@ -80,13 +82,20 @@ class SmtpNotifier:
 
 def _build_default_notifier() -> Notifier:
     settings = get_settings()
-    if settings.smtp_host:
+    smtp_provider = settings.smtp_provider.lower().strip()
+    smtp_host = settings.smtp_host
+    if smtp_provider == "mxroute" and not smtp_host:
+        smtp_host = MXROUTE_SMTP_HOST
+    if smtp_host:
+        from_email = settings.smtp_from_email
+        if from_email == "noreply@letsgive.ca" and settings.smtp_username:
+            from_email = settings.smtp_username
         return SmtpNotifier(
-            host=settings.smtp_host,
+            host=smtp_host,
             port=settings.smtp_port,
             username=settings.smtp_username,
             password=settings.smtp_password,
-            from_email=settings.smtp_from_email,
+            from_email=from_email,
             use_tls=settings.smtp_use_tls,
         )
     return LoggingNotifier()

@@ -135,6 +135,8 @@ export interface SessionOperator {
   amount_visible: boolean;
   test_mode: boolean;
   operator_warning: string | null;
+  active_approval_id: string | null;
+  active_approval_expires_at: string | null;
   contribution_count: number;
   total_amount: string | null;
 }

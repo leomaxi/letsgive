@@ -122,11 +122,13 @@ LETSGIVE_MFA_ISSUER=Let's Give
 # Optional but recommended: real SMTP delivery for finance-approval OTP codes.
 # Leave unset and the app just logs the code server-side instead (fine for a
 # first smoke test, not for real Finance officers).
-# LETSGIVE_SMTP_HOST=smtp.yourprovider.com
+# MXroute example. Use the sending mailbox address/password, not the MXroute API key.
+# LETSGIVE_SMTP_PROVIDER=mxroute
 # LETSGIVE_SMTP_PORT=587
-# LETSGIVE_SMTP_USERNAME=...
-# LETSGIVE_SMTP_PASSWORD=...
-# LETSGIVE_SMTP_FROM_EMAIL=noreply@letsgive.ca
+# LETSGIVE_SMTP_USERNAME=noreply@yourdomain.org
+# LETSGIVE_SMTP_PASSWORD=your-mailbox-or-app-password
+# LETSGIVE_SMTP_FROM_EMAIL=noreply@yourdomain.org
+# LETSGIVE_SMTP_USE_TLS=true
 EOF
 sudo chmod 600 /opt/letsgive/app/backend/.env
 ```

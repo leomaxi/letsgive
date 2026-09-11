@@ -29,10 +29,12 @@ class Settings(BaseSettings):
     encryption_key: str = "aDitUzqDj29Jdbp2iOLCrl8mbC4Q7lUGtb_x9Bzq1Kw="
 
     # Real email delivery for finance-approval OTP codes (spec 5.1
-    # "notifications"). Empty smtp_host (the default) means "not configured"
-    # -- app/domain/notifications.py falls back to logging the code instead
-    # of trying to send it, so a fresh dev checkout works with zero setup.
-    # Set LETSGIVE_SMTP_HOST (and friends) to switch to real delivery.
+    # "notifications"). Empty smtp_host/smtp_provider (the default) means
+    # "not configured" -- app/domain/notifications.py falls back to logging
+    # the code instead of trying to send it, so a fresh dev checkout works
+    # with zero setup. Set LETSGIVE_SMTP_PROVIDER=mxroute plus mailbox
+    # credentials, or set LETSGIVE_SMTP_HOST directly for any SMTP provider.
+    smtp_provider: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""

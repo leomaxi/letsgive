@@ -54,6 +54,8 @@ function makeOperator(overrides: Partial<SessionOperator> = {}): SessionOperator
     amount_visible: false,
     test_mode: false,
     operator_warning: null,
+    active_approval_id: null,
+    active_approval_expires_at: null,
     contribution_count: 3,
     total_amount: null,
     ...overrides,

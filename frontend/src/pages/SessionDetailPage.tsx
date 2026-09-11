@@ -107,6 +107,7 @@ export default function SessionDetailPage() {
   const canToggleVisibility = role === "finance";
   const sessionTitle = `${session.contribution_method.replace("-", " ")} session`;
   const displayStatus = session.status.replace("_", " ");
+  const pendingApprovalId = approvalId ?? session.active_approval_id;
 
   return (
     <div className="space-y-6">
@@ -268,7 +269,9 @@ export default function SessionDetailPage() {
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 {sentTo.length > 0
                   ? `A code was sent to ${sentTo.join(", ")}. Ask finance to read it to you.`
-                  : "A code was sent to your organization's finance officer(s)."}
+                  : session.active_approval_expires_at
+                    ? `Finance approval is pending until ${new Date(session.active_approval_expires_at).toLocaleTimeString()}.`
+                    : "A code was sent to your organization's finance officer(s)."}
               </p>
               {canRequestApproval && (
                 <div className="flex gap-2">
@@ -282,11 +285,11 @@ export default function SessionDetailPage() {
                   <Button
                     disabled={busy || code.length !== 6}
                     onClick={async () => {
-                      if (!approvalId) {
-                        setError("Request approval again in this browser tab first.");
+                      if (!pendingApprovalId) {
+                        setError("No active approval request is available. Request finance approval again.");
                         return;
                       }
-                      await runAction(() => sessionApi.verify(session.id, approvalId, code));
+                      await runAction(() => sessionApi.verify(session.id, pendingApprovalId, code));
                       setCode("");
                     }}
                   >

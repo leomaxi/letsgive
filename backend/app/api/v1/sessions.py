@@ -84,9 +84,29 @@ def _client_ip(request: Request) -> str | None:
 async def _operator_response(db: AsyncSession, session: Session) -> SessionOperatorOut:
     count, total = await compute_ledger_totals(db, session.id)
     warning = await compute_operator_warning(db, session)
+    active_approval = None
+    if session.status == SessionStatus.APPROVAL_REQUESTED:
+        result = await db.execute(
+            select(Approval)
+            .where(
+                Approval.session_id == session.id,
+                Approval.verified_at.is_(None),
+                Approval.locked.is_(False),
+                Approval.expires_at >= datetime.now(timezone.utc),
+            )
+            .order_by(Approval.created_at.desc())
+            .limit(1)
+        )
+        active_approval = result.scalar_one_or_none()
     out = SessionOperatorOut.model_validate(session)
     return out.model_copy(
-        update={"contribution_count": count, "total_amount": total, "operator_warning": warning}
+        update={
+            "contribution_count": count,
+            "total_amount": total,
+            "operator_warning": warning,
+            "active_approval_id": active_approval.id if active_approval else None,
+            "active_approval_expires_at": active_approval.expires_at if active_approval else None,
+        }
     )
 
 

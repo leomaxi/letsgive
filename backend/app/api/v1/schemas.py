@@ -213,6 +213,8 @@ class SessionOperatorOut(BaseModel):
     amount_visible: bool
     test_mode: bool
     operator_warning: str | None
+    active_approval_id: str | None = None
+    active_approval_expires_at: datetime | None = None
     contribution_count: int = 0
     total_amount: Decimal | None = None
 
