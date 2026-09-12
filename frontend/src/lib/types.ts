@@ -169,6 +169,7 @@ export interface RequestApprovalResponse {
   approval_id: string;
   expires_at: string;
   sent_to: string[];
+  delivery_failed_to: string[];
 }
 
 export interface DisplayTokenResponse {

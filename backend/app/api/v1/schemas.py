@@ -242,6 +242,7 @@ class RequestApprovalResponse(BaseModel):
     approval_id: str
     expires_at: datetime
     sent_to: list[EmailStr]
+    delivery_failed_to: list[EmailStr] = Field(default_factory=list)
 
 
 class VerifyApprovalRequest(BaseModel):

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -70,6 +71,7 @@ from app.domain.realtime import get_broadcaster
 from app.domain.sessions import check_version, compute_operator_warning, transition
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
+logger = logging.getLogger("letsgive.sessions")
 # Separate router: list-by-org naturally nests under /v1/organizations/{id},
 # not /v1/sessions, so it can't share `router`'s prefix with everything else
 # below. Colocated in this module anyway since it needs the same
@@ -299,6 +301,17 @@ async def request_approval(
             detail="This organization has no active finance officer to approve sessions.",
         )
 
+    existing_pending_result = await db.execute(
+        select(Approval).where(
+            Approval.session_id == session.id,
+            Approval.verified_at.is_(None),
+            Approval.locked.is_(False),
+            Approval.expires_at >= datetime.now(timezone.utc),
+        )
+    )
+    for existing_approval in existing_pending_result.scalars():
+        existing_approval.locked = True
+
     code = generate_otp_code()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=APPROVAL_TTL_MINUTES)
     approval = Approval(
@@ -317,8 +330,8 @@ async def request_approval(
     org = await db.get(Organization, session.organization_id)
     org_name = org.name if org is not None else "your organization"
 
+    delivery_failed_to: list[str] = []
     for finance_user in finance_users:
-        await notifier.send_otp(to_email=finance_user.email, code=code, session_id=session.id)
         # In-app, not just email -- a finance officer needs to see the code
         # inside the platform itself (spec follow-up), since they may not
         # have that inbox open. Same plaintext code, same expiry; this is
@@ -335,6 +348,15 @@ async def request_approval(
             ),
             session_id=session.id,
         )
+        try:
+            await notifier.send_otp(to_email=finance_user.email, code=code, session_id=session.id)
+        except Exception:
+            delivery_failed_to.append(finance_user.email)
+            logger.exception(
+                "Failed to deliver approval OTP email for session=%s to finance officer %s",
+                session.id,
+                finance_user.email,
+            )
 
     await record_audit_event(
         db,
@@ -343,7 +365,11 @@ async def request_approval(
         target_id=approval.id,
         organization_id=session.organization_id,
         actor_user_id=current_user.id,
-        after={"expires_at": expires_at.isoformat(), "notified": len(finance_users)},
+        after={
+            "expires_at": expires_at.isoformat(),
+            "notified": len(finance_users),
+            "email_delivery_failed": len(delivery_failed_to),
+        },
         ip_address=_client_ip(request),
     )
 
@@ -352,6 +378,7 @@ async def request_approval(
         approval_id=approval.id,
         expires_at=expires_at,
         sent_to=[u.email for u in finance_users],
+        delivery_failed_to=delivery_failed_to,
     )
 
 

@@ -1,6 +1,10 @@
+import re
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.notifications import get_notifier
+from app.main import app
 from tests.conftest import CapturingNotifier
 from tests.helpers import add_active_member, create_org, create_session, enable_mfa, register_and_login
 
@@ -59,6 +63,46 @@ async def test_request_approval_creates_an_in_app_notification_with_the_code(
         "/v1/me/notifications", headers={"Authorization": f"Bearer {owner_token}"}
     )
     assert resp.json() == []
+
+
+async def test_smtp_failure_still_creates_in_app_approval_code(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    class FailingNotifier:
+        async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None:
+            raise RuntimeError("smtp unavailable")
+
+    app.dependency_overrides[get_notifier] = lambda: FailingNotifier()
+
+    org, _, finance_token, media_token = await _org_with_finance_and_media(
+        client, db_session, "smtpdown"
+    )
+    session = await create_session(client, media_token, org["id"])
+
+    approval_resp = await client.post(
+        f"/v1/sessions/{session['id']}/request-approval",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert approval_resp.status_code == 200, approval_resp.text
+    approval_id = approval_resp.json()["approval_id"]
+    assert approval_resp.json()["sent_to"] == ["finance-smtpdown@example.org"]
+    assert approval_resp.json()["delivery_failed_to"] == ["finance-smtpdown@example.org"]
+
+    resp = await client.get(
+        "/v1/me/notifications", headers={"Authorization": f"Bearer {finance_token}"}
+    )
+    assert resp.status_code == 200, resp.text
+    notification = resp.json()[0]
+    match = re.search(r"Code: (\d{6})", notification["body"])
+    assert match is not None
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/verify",
+        json={"approval_id": approval_id, "code": match.group(1)},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "authorized"
 
 
 async def test_mark_notification_read_and_read_all(

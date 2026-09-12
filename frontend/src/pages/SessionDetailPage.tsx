@@ -39,6 +39,7 @@ export default function SessionDetailPage() {
   const [busy, setBusy] = useState(false);
   const [approvalId, setApprovalId] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string[]>([]);
+  const [deliveryFailedTo, setDeliveryFailedTo] = useState<string[]>([]);
   const [code, setCode] = useState("");
   const [extendMinutes, setExtendMinutes] = useState(5);
   const [newGoalAmount, setNewGoalAmount] = useState("");
@@ -86,6 +87,16 @@ export default function SessionDetailPage() {
       return undefined;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function requestApprovalCode() {
+    const res = await runAction(() => sessionApi.requestApproval(session!.id));
+    if (res) {
+      setApprovalId(res.approval_id);
+      setSentTo(res.sent_to);
+      setDeliveryFailedTo(res.delivery_failed_to);
+      setCode("");
     }
   }
 
@@ -235,17 +246,7 @@ export default function SessionDetailPage() {
         </h2>
         <div className="flex flex-wrap items-center gap-3">
           {session.status === "draft" && canRequestApproval && (
-            <Button
-              disabled={busy}
-              onClick={() =>
-                runAction(() => sessionApi.requestApproval(session.id)).then((res) => {
-                  if (res) {
-                    setApprovalId(res.approval_id);
-                    setSentTo(res.sent_to);
-                  }
-                })
-              }
-            >
+            <Button disabled={busy} onClick={requestApprovalCode}>
               Request finance approval
             </Button>
           )}
@@ -268,34 +269,41 @@ export default function SessionDetailPage() {
             <div className="w-full max-w-sm space-y-2">
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 {sentTo.length > 0
-                  ? `A code was sent to ${sentTo.join(", ")}. Ask finance to read it to you.`
+                  ? deliveryFailedTo.length > 0
+                    ? `Finance can read the code from their in-app notifications. Email delivery failed for ${deliveryFailedTo.join(", ")}.`
+                    : `Finance can read the code from their in-app notifications or email: ${sentTo.join(", ")}.`
                   : session.active_approval_expires_at
-                    ? `Finance approval is pending until ${new Date(session.active_approval_expires_at).toLocaleTimeString()}.`
-                    : "A code was sent to your organization's finance officer(s)."}
+                    ? `Finance approval is pending until ${new Date(session.active_approval_expires_at).toLocaleTimeString()}. Ask finance to check Notifications.`
+                    : "Finance can read the code from their in-app notifications."}
               </p>
               {canRequestApproval && (
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="6-digit code"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                  />
-                  <Button
-                    disabled={busy || code.length !== 6}
-                    onClick={async () => {
-                      if (!pendingApprovalId) {
-                        setError("No active approval request is available. Request finance approval again.");
-                        return;
-                      }
-                      await runAction(() => sessionApi.verify(session.id, pendingApprovalId, code));
-                      setCode("");
-                    }}
-                  >
-                    Verify
+                <>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="6-digit code"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                    />
+                    <Button
+                      disabled={busy || code.length !== 6}
+                      onClick={async () => {
+                        if (!pendingApprovalId) {
+                          setError("No active approval request is available. Request finance approval again.");
+                          return;
+                        }
+                        await runAction(() => sessionApi.verify(session.id, pendingApprovalId, code));
+                        setCode("");
+                      }}
+                    >
+                      Verify
+                    </Button>
+                  </div>
+                  <Button variant="secondary" disabled={busy} onClick={requestApprovalCode}>
+                    Resend code
                   </Button>
-                </div>
+                </>
               )}
             </div>
           )}
