@@ -8,6 +8,7 @@ from app.api.v1.schemas import (
     MfaActivateRequest,
     MfaEnrollResponse,
     TokenResponse,
+    UserEmailUpdateRequest,
     UserOut,
     UserRegisterRequest,
 )
@@ -75,6 +76,29 @@ async def login(
 
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)) -> User:
+    return current_user
+
+
+@router.patch("/me/email", response_model=UserOut)
+async def update_my_email(
+    payload: UserEmailUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect.")
+
+    new_email = str(payload.email)
+    if new_email == current_user.email:
+        return current_user
+
+    existing = await db.execute(select(User).where(User.email == new_email))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.")
+
+    current_user.email = new_email
+    await db.commit()
+    await db.refresh(current_user)
     return current_user
 
 

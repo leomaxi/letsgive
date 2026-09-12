@@ -315,10 +315,20 @@ async def test_reversal_nets_the_original_contribution_back_out(
     events = resp.json()
     reversal_event = next(e for e in events if e["decision"] == "reversed")
     assert reversal_event["corrects_event_id"] == accepted["event_id"]
-    assert reversal_event["amount"] == "42.50"
+    assert reversal_event["amount"] is None
     # The original accepted event is untouched, not deleted or mutated.
     original_event = next(e for e in events if e["id"] == accepted["event_id"])
     assert original_event["decision"] == "accepted"
+    assert original_event["amount"] is None
+
+    resp = await client.get(
+        f"/v1/sessions/{ctx['session']['id']}/events",
+        headers={"Authorization": f"Bearer {ctx['finance_token']}"},
+    )
+    events = resp.json()
+    reversal_event = next(e for e in events if e["decision"] == "reversed")
+    assert reversal_event["amount"] == "42.50"
+    original_event = next(e for e in events if e["id"] == accepted["event_id"])
     assert original_event["amount"] == "42.50"
 
     resp = await client.get(

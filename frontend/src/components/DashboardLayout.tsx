@@ -1,8 +1,11 @@
+import { useState, type FormEvent } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { useTheme } from "@/auth/ThemeContext";
-import { Badge, Select } from "@/components/ui";
+import { ApiError } from "@/lib/api";
+import { authApi } from "@/lib/endpoints";
+import { Badge, Button, ErrorText, Input, Select } from "@/components/ui";
 import BrandMark from "@/components/BrandMark";
 import NotificationsBell from "@/components/NotificationsBell";
 
@@ -22,12 +25,36 @@ const NAV_ITEMS = [
 ] as const;
 
 export default function DashboardLayout() {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const { organizations, activeOrg, setActiveOrgId } = useOrg();
   const { theme, toggleTheme } = useTheme();
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountSuccess, setAccountSuccess] = useState<string | null>(null);
+  const [accountSaving, setAccountSaving] = useState(false);
   const visibleNavItems = NAV_ITEMS.filter(
     (item) => !item.roles || (activeOrg && (item.roles as readonly string[]).includes(activeOrg.role))
   );
+
+  async function onChangeEmail(e: FormEvent) {
+    e.preventDefault();
+    setAccountError(null);
+    setAccountSuccess(null);
+    setAccountSaving(true);
+    try {
+      await authApi.updateEmail(newEmail, currentPassword);
+      await refreshUser();
+      setNewEmail("");
+      setCurrentPassword("");
+      setAccountSuccess("Email updated.");
+    } catch (err) {
+      setAccountError(err instanceof ApiError ? err.message : "Could not update email.");
+    } finally {
+      setAccountSaving(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
@@ -93,9 +120,65 @@ export default function DashboardLayout() {
                 </svg>
               )}
             </button>
-            <span className="max-w-[10rem] truncate text-sm text-slate-500 dark:text-slate-400" title={user?.email}>
-              {user?.email}
-            </span>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setAccountOpen((open) => !open);
+                  setAccountError(null);
+                  setAccountSuccess(null);
+                  setNewEmail(user?.email ?? "");
+                }}
+                className="max-w-[10rem] truncate text-sm text-slate-500 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:text-slate-400 dark:hover:text-slate-100"
+                title={user?.email}
+              >
+                {user?.email}
+              </button>
+              {accountOpen && (
+                <div className="absolute right-0 top-8 z-40 w-80 rounded-lg border border-slate-200 bg-white p-4 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                  <form onSubmit={onChangeEmail} className="space-y-3" noValidate>
+                    <div>
+                      <label htmlFor="accountEmail" className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Email
+                      </label>
+                      <Input
+                        id="accountEmail"
+                        type="email"
+                        required
+                        value={newEmail}
+                        onChange={(e) => setNewEmail(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="accountPassword" className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Current password
+                      </label>
+                      <Input
+                        id="accountPassword"
+                        type="password"
+                        required
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                      />
+                    </div>
+                    <ErrorText>{accountError}</ErrorText>
+                    {accountSuccess && (
+                      <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                        {accountSuccess}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="secondary" onClick={() => setAccountOpen(false)}>
+                        Close
+                      </Button>
+                      <Button type="submit" disabled={accountSaving || !newEmail || !currentPassword}>
+                        {accountSaving ? "Saving..." : "Save"}
+                      </Button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </div>
             <button
               onClick={logout}
               className="flex-shrink-0 whitespace-nowrap text-sm font-medium text-slate-600 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:text-slate-300 dark:hover:text-slate-100"

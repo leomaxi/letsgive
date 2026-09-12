@@ -176,13 +176,9 @@ export default function SessionDetailPage() {
           {session.goal_enabled && session.goal_amount && (
             <div className="mt-2">
               {(() => {
-                // session.total_amount is always the real total on this
-                // (operator-only) payload, unlike the public projection
-                // page's -- amount_visible only ever controls what the
-                // *audience* sees, never what the operator's own console
-                // shows them privately. A real deposit hit a goal and this
-                // stayed stuck at 0% because it used to needlessly re-gate
-                // an already-real number behind that same public-facing flag.
+                // Finance/Owner receive the private total even when the
+                // public amount is hidden; roles without amount access get
+                // null here and should not infer progress from it.
                 const goal = Number(session.goal_amount);
                 const total = session.total_amount ? Number(session.total_amount) : 0;
                 const reached = total >= goal;

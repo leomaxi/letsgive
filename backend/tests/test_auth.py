@@ -25,6 +25,49 @@ async def test_duplicate_registration_rejected(client: AsyncClient):
     assert resp.status_code == 409
 
 
+async def test_user_can_change_login_email(client: AsyncClient):
+    token = await register_and_login(client, "old-email@example.org")
+
+    resp = await client.patch(
+        "/v1/auth/me/email",
+        json={"email": "new-email@example.org", "current_password": "correct-horse-battery"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["email"] == "new-email@example.org"
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"email": "old-email@example.org", "password": "correct-horse-battery"},
+    )
+    assert resp.status_code == 401
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"email": "new-email@example.org", "password": "correct-horse-battery"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_change_email_requires_password_and_unique_email(client: AsyncClient):
+    token = await register_and_login(client, "change-email@example.org")
+    await register_and_login(client, "taken-email@example.org")
+
+    resp = await client.patch(
+        "/v1/auth/me/email",
+        json={"email": "unused-email@example.org", "current_password": "wrong-password"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+    resp = await client.patch(
+        "/v1/auth/me/email",
+        json={"email": "taken-email@example.org", "current_password": "correct-horse-battery"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+
+
 async def test_login_wrong_password_rejected(client: AsyncClient):
     await register_and_login(client, "wrongpw@example.org")
     resp = await client.post(

@@ -51,6 +51,9 @@ export const authApi = {
 
   me: () => api.get<User>("/v1/auth/me"),
 
+  updateEmail: (email: string, currentPassword: string) =>
+    api.patch<User>("/v1/auth/me/email", { email, current_password: currentPassword }),
+
   enrollMfa: () => api.post<MfaEnrollResponse>("/v1/auth/mfa/enroll"),
 
   activateMfa: (code: string) => api.post<void>("/v1/auth/mfa/activate", { code }),
@@ -74,6 +77,9 @@ export const orgApi = {
 
   inviteMember: (orgId: string, email: string, role: string) =>
     api.post<Membership>(`/v1/organizations/${orgId}/members/invite`, { email, role }),
+
+  updateMemberRole: (orgId: string, memberId: string, role: string) =>
+    api.patch<Membership>(`/v1/organizations/${orgId}/members/${memberId}`, { role }),
 
   cancelSubscription: (orgId: string) =>
     api.post<Organization>(`/v1/organizations/${orgId}/subscription/cancel`),

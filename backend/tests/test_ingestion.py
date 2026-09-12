@@ -89,11 +89,18 @@ async def test_accepted_deposit_counts_toward_totals(
     )
     operator = resp.json()
     assert operator["contribution_count"] == 1
-    assert operator["total_amount"] == "42.50"
+    assert operator["total_amount"] is None
+
+    resp = await client.get(
+        f"/v1/sessions/{live['id']}/operator", headers={"Authorization": f"Bearer {finance_token}"}
+    )
+    finance_operator = resp.json()
+    assert finance_operator["contribution_count"] == 1
+    assert finance_operator["total_amount"] == "42.50"
 
     resp = await client.patch(
         f"/v1/sessions/{live['id']}/visibility",
-        json={"amount_visible": True, "expected_version": operator["version"]},
+        json={"amount_visible": True, "expected_version": finance_operator["version"]},
         headers={"Authorization": f"Bearer {finance_token}"},
     )
     assert resp.status_code == 200, resp.text

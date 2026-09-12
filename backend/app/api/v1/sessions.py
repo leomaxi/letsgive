@@ -83,7 +83,17 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-async def _operator_response(db: AsyncSession, session: Session) -> SessionOperatorOut:
+def _can_view_private_amounts(membership: Membership | None) -> bool:
+    return membership is not None and membership.role in (Role.OWNER, Role.FINANCE)
+
+
+def _should_include_amounts(session: Session, membership: Membership | None) -> bool:
+    return session.amount_visible or _can_view_private_amounts(membership)
+
+
+async def _operator_response(
+    db: AsyncSession, session: Session, membership: Membership | None = None
+) -> SessionOperatorOut:
     count, total = await compute_ledger_totals(db, session.id)
     warning = await compute_operator_warning(db, session)
     active_approval = None
@@ -104,12 +114,22 @@ async def _operator_response(db: AsyncSession, session: Session) -> SessionOpera
     return out.model_copy(
         update={
             "contribution_count": count,
-            "total_amount": total,
+            "total_amount": total if _should_include_amounts(session, membership) else None,
             "operator_warning": warning,
             "active_approval_id": active_approval.id if active_approval else None,
             "active_approval_expires_at": active_approval.expires_at if active_approval else None,
         }
     )
+
+
+def _event_response(
+    event: ContributionEvent, session: Session, membership: Membership | None
+) -> ContributionEventOut:
+    out = ContributionEventOut.model_validate(event)
+    if not _should_include_amounts(session, membership):
+        out.amount = None
+        out.currency = None
+    return out
 
 
 async def _public_payload(db: AsyncSession, session: Session) -> SessionPublicOut:
@@ -246,7 +266,7 @@ async def create_session(
 
     await db.commit()
     await db.refresh(session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @org_sessions_router.get("/sessions", response_model=list[SessionOperatorOut])
@@ -264,7 +284,7 @@ async def list_org_sessions(
 
     result = await db.execute(query)
     sessions = list(result.scalars().all())
-    return [await _operator_response(db, session) for session in sessions]
+    return [await _operator_response(db, session, membership) for session in sessions]
 
 
 @router.post("/{session_id}/request-approval", response_model=RequestApprovalResponse)
@@ -444,7 +464,7 @@ async def verify_approval(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/start", response_model=SessionOperatorOut)
@@ -479,7 +499,7 @@ async def start_session(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/pause", response_model=SessionOperatorOut)
@@ -511,7 +531,7 @@ async def pause_session(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/resume", response_model=SessionOperatorOut)
@@ -547,7 +567,7 @@ async def resume_session(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/extend", response_model=SessionOperatorOut)
@@ -588,7 +608,7 @@ async def extend_session(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.patch("/{session_id}/goal", response_model=SessionOperatorOut)
@@ -646,7 +666,7 @@ async def update_goal(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.patch("/{session_id}/visibility", response_model=SessionOperatorOut)
@@ -681,7 +701,7 @@ async def set_visibility(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/close", response_model=SessionOperatorOut)
@@ -716,7 +736,7 @@ async def close_session(
     await db.commit()
     await db.refresh(session)
     await broadcast_session_update(db, session)
-    return await _operator_response(db, session)
+    return await _operator_response(db, session, membership)
 
 
 @router.get("/{session_id}/operator", response_model=SessionOperatorOut)
@@ -730,8 +750,8 @@ async def get_operator_state(
     # pause, etc.) stay Media/Finance-only. Without this, an Owner or
     # Auditor clicking through from the sessions list (which links every
     # role to this page) would 403 and see a confusing "not found".
-    session, _membership = session_membership
-    return await _operator_response(db, session)
+    session, membership = session_membership
+    return await _operator_response(db, session, membership)
 
 
 @router.post("/{session_id}/display-token", response_model=DisplayTokenResponse)
@@ -874,20 +894,20 @@ async def list_session_events(
     session_id: str,
     session_membership: tuple[Session, Membership] = Depends(get_session_membership),
     db: AsyncSession = Depends(get_db),
-) -> list[ContributionEvent]:
+) -> list[ContributionEventOut]:
     # Read-only for any active member -- same reasoning as GET .../operator
     # above: the session detail page any role can reach also renders this
     # ledger list, and an Owner/Auditor can already see the same events via
     # the session report (reports.py), so there's nothing gained by 403ing
     # them here.
-    session, _membership = session_membership
+    session, membership = session_membership
 
     result = await db.execute(
         select(ContributionEvent)
         .where(ContributionEvent.session_id == session.id)
         .order_by(ContributionEvent.received_at.desc())
     )
-    return list(result.scalars().all())
+    return [_event_response(event, session, membership) for event in result.scalars().all()]
 
 
 @router.websocket("/{session_id}/live")
@@ -978,7 +998,7 @@ async def session_live_operator(
         await websocket.close(code=4403)
         return
 
-    initial_payload = await _operator_response(db, session)
+    initial_payload = await _operator_response(db, session, membership)
     await db.close()
 
     await websocket.accept()

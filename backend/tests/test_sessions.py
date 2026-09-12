@@ -211,13 +211,55 @@ async def test_public_payload_reveals_goal_reached_even_when_amount_is_hidden(
     assert public["total_amount"] is None
     assert public["goal_reached"] is True
 
-    # The operator's own console, unlike the public payload, always carries
-    # the real total regardless of amount_visible -- it's a private view.
+    # Media can operate the session, but when Finance keeps exact amounts
+    # hidden, the backend now redacts the private running total from Media's
+    # operator payload too -- the UI hiding it is not the security boundary.
     resp = await client.get(
         f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {media_token}"}
     )
     operator = resp.json()
     assert operator["amount_visible"] is False
+    assert operator["total_amount"] is None
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {finance_token}"}
+    )
+    finance_operator = resp.json()
+    assert finance_operator["amount_visible"] is False
+    assert finance_operator["total_amount"] == "2.02"
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {owner_token}"}
+    )
+    owner_operator = resp.json()
+    assert owner_operator["amount_visible"] is False
+    assert owner_operator["total_amount"] == "2.02"
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/events", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert [event["amount"] for event in resp.json()] == [None, None]
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/events", headers={"Authorization": f"Bearer {finance_token}"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert [event["amount"] for event in resp.json()] == ["1.02", "1.00"]
+
+    resp = await client.patch(
+        f"/v1/sessions/{session['id']}/visibility",
+        json={"amount_visible": True, "expected_version": finance_operator["version"]},
+        headers={"Authorization": f"Bearer {finance_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["amount_visible"] is True
+
+    resp = await client.get(
+        f"/v1/sessions/{session['id']}/operator", headers={"Authorization": f"Bearer {media_token}"}
+    )
+    operator = resp.json()
+    assert operator["amount_visible"] is True
     assert operator["total_amount"] == "2.02"
 
 

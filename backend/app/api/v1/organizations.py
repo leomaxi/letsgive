@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user, get_membership
 from app.api.v1.schemas import (
     MemberInviteRequest,
+    MemberRoleUpdateRequest,
     MembershipOut,
     MyOrganizationOut,
     OrganizationCreateRequest,
@@ -214,6 +215,71 @@ async def invite_member(
     await db.commit()
     await db.refresh(new_membership)
     return _to_membership_out(new_membership, invitee)
+
+
+@router.patch("/{organization_id}/members/{member_id}", response_model=MembershipOut)
+async def update_member_role(
+    member_id: str,
+    payload: MemberRoleUpdateRequest,
+    request: Request,
+    membership: Membership = Depends(get_membership),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MembershipOut:
+    require_roles(membership, Role.OWNER)
+
+    result = await db.execute(
+        select(Membership, User)
+        .join(User, User.id == Membership.user_id)
+        .where(
+            Membership.id == member_id,
+            Membership.organization_id == membership.organization_id,
+            Membership.status != MembershipStatus.REQUESTED,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    target_membership, target_user = row
+
+    if payload.role in MFA_REQUIRED_ROLES and not target_user.mfa_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The '{payload.role.value}' role requires the member to have MFA enabled.",
+        )
+
+    if target_membership.role == Role.OWNER and payload.role != Role.OWNER:
+        owner_count_result = await db.execute(
+            select(func.count(Membership.id)).where(
+                Membership.organization_id == membership.organization_id,
+                Membership.role == Role.OWNER,
+                Membership.status == MembershipStatus.ACTIVE,
+            )
+        )
+        if owner_count_result.scalar_one() <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This organization must keep at least one active owner.",
+            )
+
+    before_role = target_membership.role
+    target_membership.role = payload.role
+
+    await record_audit_event(
+        db,
+        action="membership.role_changed",
+        target_type="membership",
+        target_id=target_membership.id,
+        organization_id=membership.organization_id,
+        actor_user_id=current_user.id,
+        before={"role": before_role.value if before_role else None},
+        after={"role": payload.role.value, "member_email": target_user.email},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    await db.commit()
+    await db.refresh(target_membership)
+    return _to_membership_out(target_membership, target_user)
 
 
 @router.post("/{organization_id}/subscription/cancel", response_model=OrganizationOut)

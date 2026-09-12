@@ -31,6 +31,11 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserEmailUpdateRequest(BaseModel):
+    email: EmailStr
+    current_password: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -103,6 +108,10 @@ class SwitchPlanRequest(BaseModel):
 
 class MemberInviteRequest(BaseModel):
     email: EmailStr
+    role: Role
+
+
+class MemberRoleUpdateRequest(BaseModel):
     role: Role
 
 

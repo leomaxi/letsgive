@@ -26,6 +26,8 @@ export default function OrgHomePage() {
   const [role, setRole] = useState<Role>("media");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const [roleSuccess, setRoleSuccess] = useState<string | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
 
   const membersQuery = useQuery({
@@ -52,6 +54,21 @@ export default function OrgHomePage() {
     },
   });
 
+  const roleMutation = useMutation({
+    mutationFn: ({ memberId, nextRole }: { memberId: string; nextRole: Role }) =>
+      orgApi.updateMemberRole(activeOrg!.id, memberId, nextRole),
+    onSuccess: (member) => {
+      setRoleError(null);
+      setRoleSuccess(`Updated ${member.user_email} to ${member.role}.`);
+      queryClient.invalidateQueries({ queryKey: ["members", activeOrg?.id] });
+      queryClient.invalidateQueries({ queryKey: ["my-organizations"] });
+    },
+    onError: (err) => {
+      setRoleSuccess(null);
+      setRoleError(err instanceof ApiError ? err.message : "Could not update this member's role.");
+    },
+  });
+
   if (!activeOrg) return null;
 
   function onInvite(e: FormEvent) {
@@ -59,6 +76,12 @@ export default function OrgHomePage() {
     setInviteError(null);
     setInviteSuccess(null);
     inviteMutation.mutate();
+  }
+
+  function onRoleChange(memberId: string, nextRole: Role) {
+    setRoleError(null);
+    setRoleSuccess(null);
+    roleMutation.mutate({ memberId, nextRole });
   }
 
   const isOwner = activeOrg.role === "owner";
@@ -175,20 +198,43 @@ export default function OrgHomePage() {
           {membersQuery.isLoading ? (
             <Spinner className="h-5 w-5 text-brand-600" />
           ) : (
-            <ul className="divide-y divide-slate-100 dark:divide-slate-700">
-              {membersQuery.data?.map((m) => (
-                <li key={m.id} className="flex items-center justify-between py-2 text-sm">
-                  <div>
-                    <div className="text-slate-700 dark:text-slate-300">{m.user_full_name}</div>
-                    <div className="text-xs text-slate-400 dark:text-slate-500">{m.user_email}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={ROLE_TONE[m.role]}>{m.role}</Badge>
-                    {m.status !== "active" && <Badge tone="amber">{m.status}</Badge>}
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+                {membersQuery.data?.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                    <div className="min-w-0">
+                      <div className="truncate text-slate-700 dark:text-slate-300">{m.user_full_name}</div>
+                      <div className="truncate text-xs text-slate-400 dark:text-slate-500">{m.user_email}</div>
+                    </div>
+                    <div className="flex flex-shrink-0 items-center gap-2">
+                      {isOwner ? (
+                        <Select
+                          className="w-28 py-1"
+                          value={m.role}
+                          disabled={roleMutation.isPending}
+                          onChange={(e) => onRoleChange(m.id, e.target.value as Role)}
+                        >
+                          {ROLES.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <Badge tone={ROLE_TONE[m.role]}>{m.role}</Badge>
+                      )}
+                      {m.status !== "active" && <Badge tone="amber">{m.status}</Badge>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <ErrorText>{roleError}</ErrorText>
+              {roleSuccess && (
+                <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                  {roleSuccess}
+                </p>
+              )}
+            </>
           )}
         </Card>
       </div>
