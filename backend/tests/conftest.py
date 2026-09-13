@@ -26,11 +26,20 @@ class CapturingNotifier:
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None:
         self.sent.append({"to_email": to_email, "code": code, "session_id": session_id})
 
+    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
+        self.sent.append({"to_email": to_email, "reset_url": reset_url})
+
     def latest_code_for(self, session_id: str) -> str:
         for entry in reversed(self.sent):
             if entry["session_id"] == session_id:
                 return entry["code"]
         raise AssertionError(f"No OTP was sent for session {session_id}")
+
+    def latest_reset_url_for(self, to_email: str) -> str:
+        for entry in reversed(self.sent):
+            if entry.get("to_email") == to_email and "reset_url" in entry:
+                return entry["reset_url"]
+        raise AssertionError(f"No password reset was sent to {to_email}")
 
 
 @pytest_asyncio.fixture

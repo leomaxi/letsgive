@@ -42,6 +42,19 @@ class LoginRequest(BaseModel):
     mfa_code: str | None = None
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=20)
+    password: str = Field(min_length=10)
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

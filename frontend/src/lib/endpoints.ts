@@ -13,6 +13,7 @@ import type {
   Invitation,
   JoinRequest,
   MailboxConnection,
+  MessageResponse,
   MfaEnrollResponse,
   Membership,
   MyOrganization,
@@ -46,6 +47,16 @@ export const authApi = {
     api.post<TokenResponse>(
       "/v1/auth/login",
       { email, password, mfa_code: mfaCode || undefined },
+      { auth: false }
+    ),
+
+  requestPasswordReset: (email: string) =>
+    api.post<MessageResponse>("/v1/auth/password-reset/request", { email }, { auth: false }),
+
+  confirmPasswordReset: (token: string, password: string) =>
+    api.post<MessageResponse>(
+      "/v1/auth/password-reset/confirm",
+      { token, password },
       { auth: false }
     ),
 

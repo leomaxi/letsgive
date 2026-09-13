@@ -8,6 +8,7 @@ from app.db.models.membership import Membership, MembershipStatus, Role
 from app.db.models.notification import Notification, NotificationType
 from app.db.models.organization import Organization, SubscriptionStatus
 from app.db.models.parser_profile import ParserProfile
+from app.db.models.password_reset_token import PasswordResetToken
 from app.db.models.plan import SEED_PLANS, Plan
 from app.db.models.reconciliation_item import (
     ReconciliationItem,
@@ -39,6 +40,7 @@ __all__ = [
     "NotificationType",
     "Organization",
     "ParserProfile",
+    "PasswordResetToken",
     "Plan",
     "SEED_PLANS",
     "ReconciliationItem",

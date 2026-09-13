@@ -15,6 +15,10 @@ export interface TokenResponse {
   token_type: string;
 }
 
+export interface MessageResponse {
+  message: string;
+}
+
 export interface MfaEnrollResponse {
   secret: string;
   provisioning_uri: string;

@@ -8,6 +8,7 @@ from app.domain.crypto import EncryptedString
 
 if TYPE_CHECKING:
     from app.db.models.membership import Membership
+    from app.db.models.password_reset_token import PasswordResetToken
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -29,3 +30,6 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     memberships: Mapped[list["Membership"]] = relationship(back_populates="user")
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )

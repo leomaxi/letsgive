@@ -21,6 +21,7 @@ MXROUTE_SMTP_HOST = "tuesday.mxrouting.net"
 
 class Notifier(Protocol):
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None: ...
+    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None: ...
 
 
 class LoggingNotifier:
@@ -33,6 +34,9 @@ class LoggingNotifier:
 
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None:
         logger.info("OTP for session=%s sent to finance officer %s: %s", session_id, to_email, code)
+
+    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
+        logger.info("Password reset link sent to %s: %s", to_email, reset_url)
 
 
 class SmtpNotifier:
@@ -59,16 +63,35 @@ class SmtpNotifier:
         self._use_tls = use_tls
 
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None:
-        await asyncio.to_thread(self._send_sync, to_email=to_email, code=code, session_id=session_id)
-
-    def _send_sync(self, *, to_email: str, code: str, session_id: str) -> None:
-        message = MIMEText(
+        message = (
             f"A live-session approval code was requested for session {session_id}.\n\n"
             f"Code: {code}\n\n"
             "If you weren't expecting this, you can ignore it -- the code expires on its "
             "own and nothing is authorized until it's entered."
         )
-        message["Subject"] = "Let's Give: finance approval code"
+        await asyncio.to_thread(
+            self._send_sync,
+            to_email=to_email,
+            subject="Let's Give: finance approval code",
+            body=message,
+        )
+
+    async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
+        message = (
+            "A password reset was requested for your Let's Give account.\n\n"
+            f"Reset your password here: {reset_url}\n\n"
+            "This link expires in 30 minutes. If you didn't request a reset, you can ignore this email."
+        )
+        await asyncio.to_thread(
+            self._send_sync,
+            to_email=to_email,
+            subject="Let's Give: reset your password",
+            body=message,
+        )
+
+    def _send_sync(self, *, to_email: str, subject: str, body: str) -> None:
+        message = MIMEText(body)
+        message["Subject"] = subject
         message["From"] = self._from_email
         message["To"] = to_email
 

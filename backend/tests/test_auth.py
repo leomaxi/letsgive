@@ -2,7 +2,9 @@ import pyotp
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from urllib.parse import parse_qs, urlparse
 
+from tests.conftest import CapturingNotifier
 from tests.helpers import create_org, enable_mfa, register_and_login
 
 
@@ -74,6 +76,53 @@ async def test_login_wrong_password_rejected(client: AsyncClient):
         "/v1/auth/login", json={"email": "wrongpw@example.org", "password": "not-the-password"}
     )
     assert resp.status_code == 401
+
+
+async def test_password_reset_flow_from_email_link(client: AsyncClient, notifier: CapturingNotifier):
+    email = "reset-me@example.org"
+    old_password = "correct-horse-battery"
+    new_password = "new-correct-horse-battery"
+    await register_and_login(client, email, old_password)
+
+    resp = await client.post(
+        "/v1/auth/password-reset/request",
+        json={"email": email},
+        headers={"Origin": "https://give.example.org"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "If an account exists" in resp.json()["message"]
+
+    reset_url = notifier.latest_reset_url_for(email)
+    assert reset_url.startswith("https://give.example.org/reset-password?")
+    token = parse_qs(urlparse(reset_url).query)["token"][0]
+    assert token
+
+    resp = await client.post(
+        "/v1/auth/password-reset/confirm",
+        json={"token": token, "password": new_password},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post("/v1/auth/login", json={"email": email, "password": old_password})
+    assert resp.status_code == 401
+
+    resp = await client.post("/v1/auth/login", json={"email": email, "password": new_password})
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post(
+        "/v1/auth/password-reset/confirm",
+        json={"token": token, "password": "another-new-password"},
+    )
+    assert resp.status_code == 400
+
+
+async def test_password_reset_request_does_not_reveal_unknown_email(
+    client: AsyncClient, notifier: CapturingNotifier
+):
+    resp = await client.post("/v1/auth/password-reset/request", json={"email": "unknown@example.org"})
+    assert resp.status_code == 200, resp.text
+    assert "If an account exists" in resp.json()["message"]
+    assert notifier.sent == []
 
 
 async def test_org_creation_requires_mfa(client: AsyncClient):

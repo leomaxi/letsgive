@@ -19,6 +19,7 @@ import OrgHomePage from "@/pages/OrgHomePage";
 
 const LoginPage = lazy(() => import("@/pages/LoginPage"));
 const RegisterPage = lazy(() => import("@/pages/RegisterPage"));
+const ResetPasswordPage = lazy(() => import("@/pages/ResetPasswordPage"));
 const MfaSetupPage = lazy(() => import("@/pages/MfaSetupPage"));
 const CreateOrgPage = lazy(() => import("@/pages/CreateOrgPage"));
 const JoinOrganizationPage = lazy(() => import("@/pages/JoinOrganizationPage"));
@@ -122,6 +123,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
 
         <Route element={<RequireAuth />}>
           <Route path="/mfa-setup" element={<MfaSetupPage />} />
