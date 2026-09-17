@@ -284,6 +284,55 @@ def _fetch_new_sync(
         raise
 
 
+def _fetch_by_message_id_sync(
+    *, host: str, port: int, mailbox: str, password: str, provider_message_id: str
+) -> RawMessage | None:
+    connection = imaplib.IMAP4_SSL(host, port, timeout=15)
+    try:
+        connection.login(mailbox, password)
+        connection.select("INBOX")
+        search_values = [provider_message_id]
+        stripped = provider_message_id.strip("<>")
+        if stripped != provider_message_id:
+            search_values.append(stripped)
+        else:
+            search_values.append(f"<{provider_message_id}>")
+
+        for value in search_values:
+            typ, data = connection.uid("search", None, "HEADER", "Message-ID", value)
+            if typ != "OK" or not data or not data[0]:
+                continue
+            uid = data[0].split()[0]
+            typ, msg_data = connection.uid("fetch", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not msg_data or msg_data[0] is None:
+                continue
+            return _parse_message(uid, msg_data[0][1]).message
+        return None
+    finally:
+        _logout_sync(connection)
+
+
+async def fetch_imap_message_by_message_id(
+    connection: MailboxConnection, provider_message_id: str
+) -> RawMessage | None:
+    if connection.provider != MailboxProviderName.IMAP:
+        return None
+    if not connection.imap_host or not connection.imap_port or not connection.imap_password:
+        return None
+    try:
+        return await asyncio.to_thread(
+            _fetch_by_message_id_sync,
+            host=connection.imap_host,
+            port=connection.imap_port,
+            mailbox=connection.mailbox,
+            password=connection.imap_password,
+            provider_message_id=provider_message_id,
+        )
+    except (OSError, imaplib.IMAP4.error):
+        logger.exception("Failed to fetch IMAP message %s for export", provider_message_id)
+        return None
+
+
 def _mark_seen_on_connection_sync(connection: imaplib.IMAP4_SSL, uids: list[str]) -> None:
     """Marks the given UIDs \\Seen on an already-open, already-SELECTed
     connection -- see _fetch_new_sync's docstring for why this no longer

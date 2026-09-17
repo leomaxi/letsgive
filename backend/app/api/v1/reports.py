@@ -18,7 +18,7 @@ from app.api.v1.schemas import (
 from app.db.models.approval import Approval
 from app.db.models.contribution_event import ContributionDecision, ContributionEvent
 from app.db.models.contribution_export_template import ContributionExportTemplate
-from app.db.models.mailbox_connection import MailboxConnection
+from app.db.models.mailbox_connection import MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
 from app.db.models.organization import Organization
 from app.db.models.reconciliation_item import ReconciliationItem, ReconciliationStatus
@@ -26,8 +26,10 @@ from app.db.models.session import Session
 from app.db.session import get_db
 from app.domain.billing import assert_reports_readable
 from app.domain.audit import record_audit_event
-from app.domain.imap_polling import get_recent_messages
+from app.domain.imap_polling import fetch_imap_message_by_message_id, get_recent_messages
+from app.domain.ingestion import build_export_details
 from app.domain.ledger import compute_ledger_totals
+from app.domain.mailbox_providers import get_provider
 from app.domain.pdf_report import render_session_report_pdf
 from app.domain.rbac import require_roles
 
@@ -78,6 +80,35 @@ def _matches_keywords(event: ContributionEvent, keywords: list[str]) -> bool:
     haystack = " ".join(str(details.get(key) or "") for key in ("message", "sent_from", "sender_name"))
     haystack = haystack.lower()
     return any(keyword in haystack for keyword in keywords)
+
+
+async def _hydrate_missing_export_details(
+    db: AsyncSession, connection: MailboxConnection, events: list[ContributionEvent]
+) -> None:
+    missing = [event for event in events if not event.export_details]
+    if not missing:
+        return
+
+    hydrated = False
+    for event in missing:
+        message = None
+        if connection.provider == MailboxProviderName.IMAP:
+            message = await fetch_imap_message_by_message_id(connection, event.provider_message_id)
+        else:
+            try:
+                message = await get_provider(connection.provider).fetch_message(
+                    connection=connection,
+                    provider_message_id=event.provider_message_id,
+                )
+            except NotImplementedError:
+                message = None
+        if message is None:
+            continue
+        event.export_details = build_export_details(message)
+        hydrated = True
+
+    if hydrated:
+        await db.commit()
 
 
 async def _build_report(db: AsyncSession, session: Session) -> SessionReportOut:
@@ -338,6 +369,7 @@ async def sample_export_fields(
     require_roles(membership, Role.OWNER, Role.FINANCE)
 
     samples: dict[str, list[str]] = {key: [] for key in FIELD_LABELS}
+    connection = None
 
     if connection_id:
         connection = await db.get(MailboxConnection, connection_id)
@@ -366,7 +398,10 @@ async def sample_export_fields(
         .order_by(ContributionEvent.received_at.desc())
         .limit(10)
     )
-    for event in result.scalars().all():
+    events = list(result.scalars().all())
+    if connection is not None:
+        await _hydrate_missing_export_details(db, connection, events)
+    for event in events:
         for key in FIELD_LABELS:
             value = _event_export_value(event, key)
             if value and value not in samples[key]:
@@ -419,8 +454,10 @@ async def export_contributions_csv(
         )
         .order_by(ContributionEvent.received_at)
     )
+    all_events = list(result.scalars().all())
+    await _hydrate_missing_export_details(db, connection, all_events)
     keyword_terms = _keyword_list(keywords)
-    events = [event for event in result.scalars().all() if _matches_keywords(event, keyword_terms)]
+    events = [event for event in all_events if _matches_keywords(event, keyword_terms)]
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)

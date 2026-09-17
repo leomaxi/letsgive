@@ -73,7 +73,7 @@ def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str | None:
     return None
 
 
-def _export_details_from_message(message: RawMessage) -> dict[str, str | None]:
+def build_export_details(message: RawMessage) -> dict[str, str | None]:
     sender_name, sender_email = parseaddr(message.sender)
     full_text = f"{message.subject}\n{message.body}".strip()
     transfer_sender = _extract_labeled_value(full_text, ("Sent From",))
@@ -174,7 +174,7 @@ async def ingest_message(
         provider_message_id=message.provider_message_id,
         fingerprint=_fingerprint(message),
         received_at=message.received_at,
-        export_details=_export_details_from_message(message),
+        export_details=build_export_details(message),
     )
 
     if session is None:

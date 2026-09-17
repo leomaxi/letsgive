@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 from httpx import AsyncClient
 from pypdf import PdfReader
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.contribution_event import ContributionEvent
 
 from tests.conftest import CapturingNotifier
 from tests.helpers import (
@@ -302,6 +305,13 @@ async def test_received_money_export_uses_interac_sent_from_as_sender_name(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["decision"] == "accepted"
+
+    result = await db_session.execute(
+        select(ContributionEvent).where(ContributionEvent.provider_message_id == "interac-received-money")
+    )
+    event = result.scalar_one()
+    event.export_details = None
+    await db_session.commit()
 
     resp = await client.get(
         f"/v1/organizations/{org['id']}/contribution-export.csv",
