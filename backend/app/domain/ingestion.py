@@ -1,5 +1,7 @@
 import hashlib
+import re
 from dataclasses import dataclass
+from email.utils import parseaddr
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +28,29 @@ RECONCILIABLE_DECISIONS = (ContributionDecision.AMBIGUOUS, ContributionDecision.
 def _fingerprint(message: RawMessage) -> str:
     raw = f"{message.provider_message_id}:{message.received_at.isoformat()}:{message.sender}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _extract_reference_number(text: str) -> str | None:
+    patterns = [
+        r"(?:reference|confirmation|transaction|ref(?:erence)?\s*(?:no\.?|number|#)?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{4,})",
+        r"\b([A-Z]{2,}\d{5,}[A-Z0-9-]*)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" .,:;")
+    return None
+
+
+def _export_details_from_message(message: RawMessage) -> dict[str, str | None]:
+    sender_name, sender_email = parseaddr(message.sender)
+    full_text = f"{message.subject}\n{message.body}".strip()
+    return {
+        "sender_name": sender_name or sender_email or message.sender,
+        "sent_from": message.sender,
+        "message": full_text,
+        "reference_number": _extract_reference_number(full_text),
+    }
 
 
 @dataclass
@@ -116,6 +141,7 @@ async def ingest_message(
         provider_message_id=message.provider_message_id,
         fingerprint=_fingerprint(message),
         received_at=message.received_at,
+        export_details=_export_details_from_message(message),
     )
 
     if session is None:

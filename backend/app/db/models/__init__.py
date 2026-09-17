@@ -1,6 +1,7 @@
 from app.db.models.approval import MAX_APPROVAL_ATTEMPTS, Approval
 from app.db.models.audit_log import AuditLog
 from app.db.models.contribution_event import ContributionDecision, ContributionEvent
+from app.db.models.contribution_export_template import ContributionExportTemplate
 from app.db.models.display_element import DisplayElement
 from app.db.models.display_template import DEFAULT_CANVAS, DisplayTemplate, ElementType
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection, MailboxProviderName
@@ -26,6 +27,7 @@ __all__ = [
     "AuditLog",
     "ContributionDecision",
     "ContributionEvent",
+    "ContributionExportTemplate",
     "ConnectionStatus",
     "DEFAULT_CANVAS",
     "DisplayElement",

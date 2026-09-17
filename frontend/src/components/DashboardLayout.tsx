@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Overview", end: true, roles: null },
   { to: "/sessions", label: "Sessions", end: false, roles: null },
   { to: "/mailbox", label: "Mailbox & parsing", end: false, roles: null },
+  { to: "/exports", label: "Exports", end: false, roles: ["owner", "finance"] },
   { to: "/display-studio", label: "Display Studio", end: false, roles: null },
   { to: "/reconciliation", label: "Reconciliation", end: false, roles: null },
   { to: "/audit", label: "Audit log", end: false, roles: null },

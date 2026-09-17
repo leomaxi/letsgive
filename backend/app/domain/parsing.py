@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from email.utils import parseaddr
 
 from app.db.models.parser_profile import ParserProfile
 from app.domain.mailbox_providers import RawMessage
@@ -28,7 +29,8 @@ _EXACT_MATCH = 2
 
 
 def _sender_match_specificity(sender: str, patterns: list[str]) -> int:
-    sender_lower = sender.lower()
+    parsed_sender = parseaddr(sender)[1] or sender
+    sender_lower = parsed_sender.lower()
     best = 0
     for pattern in patterns:
         pattern_lower = pattern.lower()

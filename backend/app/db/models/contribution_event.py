@@ -1,8 +1,10 @@
 import enum
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import Float, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin
@@ -83,5 +85,6 @@ class ContributionEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     currency: Mapped[str | None] = mapped_column(String(3))
     parser_confidence: Mapped[float | None] = mapped_column(Float)
     template_version: Mapped[str | None] = mapped_column(String(50))
+    export_details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     test_mode: Mapped[bool] = mapped_column(nullable=False, default=False)

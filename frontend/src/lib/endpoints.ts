@@ -6,6 +6,8 @@ import type {
   AdminSupportTicketDetail,
   AuditLogEntry,
   ContributionEvent,
+  ContributionExportField,
+  ContributionExportTemplate,
   DisplayTemplate,
   DisplayTokenResponse,
   ElementType,
@@ -309,6 +311,38 @@ export const reportApi = {
 
   sessionCsvExportUrl: (sessionId: string) => `/v1/reports/sessions/${sessionId}/export.csv`,
   sessionPdfExportUrl: (sessionId: string) => `/v1/reports/sessions/${sessionId}/export.pdf`,
+
+  listContributionExportTemplates: (orgId: string) =>
+    api.get<ContributionExportTemplate[]>(`/v1/organizations/${orgId}/contribution-export/templates`),
+
+  createContributionExportTemplate: (
+    orgId: string,
+    payload: { name: string; field_keys: string[]; field_labels?: Record<string, string>; sample?: Record<string, unknown> },
+  ) => api.post<ContributionExportTemplate>(`/v1/organizations/${orgId}/contribution-export/templates`, payload),
+
+  deleteContributionExportTemplate: (orgId: string, templateId: string) =>
+    api.delete<void>(`/v1/organizations/${orgId}/contribution-export/templates/${templateId}`),
+
+  sampleContributionExportFields: (orgId: string, connectionId?: string) =>
+    api.get<ContributionExportField[]>(
+      `/v1/organizations/${orgId}/contribution-export/fields/sample${
+        connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""
+      }`
+    ),
+
+  contributionExportUrl: (orgId: string, params: {
+    from_datetime: string;
+    to_datetime: string;
+    keywords?: string;
+    template_id?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    qs.set("from_datetime", params.from_datetime);
+    qs.set("to_datetime", params.to_datetime);
+    if (params.keywords) qs.set("keywords", params.keywords);
+    if (params.template_id) qs.set("template_id", params.template_id);
+    return `/v1/organizations/${orgId}/contribution-export.csv?${qs.toString()}`;
+  },
 };
 
 export interface DisplayElementInput {

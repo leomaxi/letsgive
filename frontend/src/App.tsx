@@ -28,6 +28,7 @@ const NewSessionPage = lazy(() => import("@/pages/NewSessionPage"));
 const SessionDetailPage = lazy(() => import("@/pages/SessionDetailPage"));
 const MailboxSettingsPage = lazy(() => import("@/pages/MailboxSettingsPage"));
 const MailboxLogPage = lazy(() => import("@/pages/MailboxLogPage"));
+const ContributionExportPage = lazy(() => import("@/pages/ContributionExportPage"));
 const DisplayStudioListPage = lazy(() => import("@/pages/DisplayStudioListPage"));
 const DisplayStudioEditorPage = lazy(() => import("@/pages/DisplayStudioEditorPage"));
 const ReconciliationPage = lazy(() => import("@/pages/ReconciliationPage"));
@@ -137,6 +138,7 @@ export default function App() {
             <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
             <Route path="/mailbox" element={<MailboxSettingsPage />} />
             <Route path="/mailbox/:connectionId/log" element={<MailboxLogPage />} />
+            <Route path="/exports" element={<ContributionExportPage />} />
             <Route path="/display-studio" element={<DisplayStudioListPage />} />
             <Route path="/display-studio/:templateId" element={<DisplayStudioEditorPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />

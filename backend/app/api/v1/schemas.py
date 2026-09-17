@@ -319,6 +319,31 @@ class ContributionEventOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ContributionExportFieldOut(BaseModel):
+    key: str
+    label: str
+    sample_values: list[str] = Field(default_factory=list)
+
+
+class ContributionExportTemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=150)
+    field_keys: list[str] = Field(min_length=1)
+    field_labels: dict[str, str] | None = None
+    sample: dict[str, Any] | None = None
+
+
+class ContributionExportTemplateOut(BaseModel):
+    id: str
+    organization_id: str
+    name: str
+    field_keys: list[str]
+    field_labels: dict[str, str]
+    sample: dict[str, Any] | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class MailboxConnectionCreateRequest(BaseModel):
     provider: MailboxProviderName
     mailbox: EmailStr

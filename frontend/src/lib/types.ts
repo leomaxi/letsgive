@@ -169,6 +169,22 @@ export interface ContributionEvent {
   corrects_event_id: string | null;
 }
 
+export interface ContributionExportField {
+  key: string;
+  label: string;
+  sample_values: string[];
+}
+
+export interface ContributionExportTemplate {
+  id: string;
+  organization_id: string;
+  name: string;
+  field_keys: string[];
+  field_labels: Record<string, string>;
+  sample: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface RequestApprovalResponse {
   approval_id: string;
   expires_at: string;

@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import datetime, timedelta, timezone
 
 from httpx import AsyncClient
 from pypdf import PdfReader
@@ -10,7 +11,9 @@ from tests.helpers import (
     approve_session,
     create_fake_connection,
     create_org,
+    create_parser_profile,
     create_session,
+    deliver_webhook,
     enable_mfa,
     register_and_login,
 )
@@ -134,3 +137,97 @@ async def test_pdf_export_for_outsider_returns_404(
         headers={"Authorization": f"Bearer {outsider_token}"},
     )
     assert resp.status_code == 404, resp.text
+
+
+async def test_owner_can_export_contributions_for_period_with_keywords_and_template(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    owner_token = await register_and_login(client, "owner-export@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Export Org")
+    finance_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "finance-export@example.org", "finance", needs_mfa=True
+    )
+    media_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "media-export@example.org", "media"
+    )
+    connection = await create_fake_connection(client, owner_token, org["id"])
+    await create_parser_profile(client, owner_token, org["id"], sender_patterns=["notifications@fakebank.com"])
+    session = await create_session(client, media_token, org["id"], mailbox_connection_id=connection["id"])
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    now = datetime.now(timezone.utc)
+    for message_id, body in [
+        ("export-tithe", "You have received $25.00 CAD. Message: tithe September. Reference ABC12345."),
+        ("export-building", "You have received $40.00 CAD. Message: building fund. Reference DEF67890."),
+    ]:
+        resp = await deliver_webhook(
+            client,
+            db_session,
+            connection["id"],
+            provider_message_id=message_id,
+            sender='"Ada Lovelace" <notifications@fakebank.com>',
+            subject="Deposit received",
+            body=body,
+            received_at=now,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["decision"] == "accepted"
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export/fields/sample",
+        headers={"Authorization": f"Bearer {finance_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert {field["key"] for field in resp.json()} >= {"sender_name", "message", "reference_number"}
+
+    resp = await client.post(
+        f"/v1/organizations/{org['id']}/contribution-export/templates",
+        json={
+            "name": "Accounting",
+            "field_keys": ["sender_name", "received_at", "amount", "message", "reference_number"],
+        },
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    template = resp.json()
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export.csv",
+        params={
+            "from_datetime": (now - timedelta(minutes=5)).isoformat(),
+            "to_datetime": (now + timedelta(minutes=5)).isoformat(),
+            "keywords": "tithe, missions",
+            "template_id": template["id"],
+        },
+        headers={"Authorization": f"Bearer {finance_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    csv_text = resp.text
+    assert "Sender's name - Sent from,Date time,Amount,Message,Reference Number" in csv_text
+    assert "25.00" in csv_text
+    assert "ABC12345" in csv_text
+    assert "40.00" not in csv_text
+
+
+async def test_media_cannot_manage_or_run_contribution_export(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-export-rbac@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Export RBAC Org")
+    media_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "media-export-rbac@example.org", "media"
+    )
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export/templates",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 403, resp.text
