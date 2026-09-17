@@ -17,13 +17,19 @@ function toIsoFromLocal(value: string): string {
   return new Date(value).toISOString();
 }
 
-async function downloadCsv(url: string, filename: string, setError: (value: string | null) => void) {
+async function downloadCsv(
+  url: string,
+  filename: string,
+  setError: (value: string | null) => void,
+  setProgress: (value: number) => void,
+) {
   setError(null);
   try {
     const token = getToken();
     const response = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
+    setProgress(82);
     if (!response.ok) {
       let detail = `Export failed (${response.status})`;
       if (response.headers.get("content-type")?.includes("application/json")) {
@@ -33,6 +39,7 @@ async function downloadCsv(url: string, filename: string, setError: (value: stri
       throw new Error(detail);
     }
     const blob = await response.blob();
+    setProgress(94);
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = objectUrl;
@@ -41,8 +48,10 @@ async function downloadCsv(url: string, filename: string, setError: (value: stri
     a.click();
     a.remove();
     URL.revokeObjectURL(objectUrl);
+    setProgress(100);
   } catch (err) {
     setError(err instanceof Error ? err.message : "Could not download the export.");
+    setProgress(0);
   }
 }
 
@@ -63,6 +72,8 @@ export default function ContributionExportPage() {
   const [selectedFields, setSelectedFields] = useState<string[]>(DEFAULT_FIELD_KEYS);
   const [templateName, setTemplateName] = useState("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [templateError, setTemplateError] = useState<string | null>(null);
 
   const canUse = activeOrg?.role === "owner" || activeOrg?.role === "finance";
@@ -130,23 +141,45 @@ export default function ContributionExportPage() {
     );
   }
 
-  function onExport() {
+  async function onExport() {
     if (!activeOrg) return;
+    if (isDownloading) return;
     if (!selectedConnectionId) {
       setDownloadError("Select a connected mailbox before exporting.");
       return;
     }
-    downloadCsv(
-      reportApi.contributionExportUrl(activeOrg.id, {
-        connection_id: selectedConnectionId,
-        from_datetime: toIsoFromLocal(fromDateTime),
-        to_datetime: toIsoFromLocal(toDateTime),
-        keywords: keywords.trim() || undefined,
-        template_id: selectedTemplateId || undefined,
-      }),
-      "contribution-export.csv",
-      setDownloadError,
-    );
+    setIsDownloading(true);
+    setDownloadProgress(5);
+    const progressTimer = window.setInterval(() => {
+      setDownloadProgress((current) => {
+        if (current === null) return 5;
+        if (current < 45) return current + 7;
+        if (current < 75) return current + 4;
+        if (current < 90) return current + 1;
+        return current;
+      });
+    }, 450);
+
+    try {
+      await downloadCsv(
+        reportApi.contributionExportUrl(activeOrg.id, {
+          connection_id: selectedConnectionId,
+          from_datetime: toIsoFromLocal(fromDateTime),
+          to_datetime: toIsoFromLocal(toDateTime),
+          keywords: keywords.trim() || undefined,
+          template_id: selectedTemplateId || undefined,
+        }),
+        "contribution-export.csv",
+        setDownloadError,
+        setDownloadProgress,
+      );
+    } finally {
+      window.clearInterval(progressTimer);
+      setIsDownloading(false);
+      window.setTimeout(() => {
+        setDownloadProgress((current) => (current === 100 ? null : current));
+      }, 1200);
+    }
   }
 
   return (
@@ -219,8 +252,25 @@ export default function ContributionExportPage() {
               </Select>
             </Field>
             <ErrorText>{downloadError}</ErrorText>
-            <Button onClick={onExport} disabled={!selectedConnectionId || !fromDateTime || !toDateTime}>
-              Download CSV
+            {downloadProgress !== null && (
+              <div className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+                <div className="mb-2 flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <span>{downloadProgress === 100 ? "Export ready" : "Preparing export"}</span>
+                  <span>{downloadProgress}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
+                  <div
+                    className="h-full rounded-full bg-brand-600 transition-all duration-300"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <Button
+              onClick={onExport}
+              disabled={isDownloading || !selectedConnectionId || !fromDateTime || !toDateTime}
+            >
+              {isDownloading ? `Preparing ${downloadProgress ?? 0}%` : "Download CSV"}
             </Button>
           </div>
         </Card>
