@@ -1,5 +1,7 @@
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from unittest.mock import MagicMock, patch
 
 from httpx import AsyncClient
 from pypdf import PdfReader
@@ -20,6 +22,32 @@ from tests.helpers import (
     enable_mfa,
     register_and_login,
 )
+
+
+def _raw_received_money_email(
+    *, message_id: str, date: datetime, sender: str, amount: str, transfer_message: str, reference: str
+) -> bytes:
+    msg = EmailMessage()
+    msg["From"] = f"{sender} <notify@payments.interac.ca>"
+    msg["To"] = "methodistchurchstjohns@gmail.com"
+    msg["Subject"] = f"Interac e-Transfer: You've received ${amount}"
+    msg["Message-ID"] = message_id
+    msg["Date"] = date.strftime("%a, %d %b %Y %H:%M:%S +0000")
+    msg.set_content(
+        "Funds Deposited!\n"
+        f"${amount}\n"
+        "Your funds have been automatically deposited into your account.\n\n"
+        "Transfer Details\n"
+        "Message:\n"
+        f"{transfer_message}\n\n"
+        "Reference Number:\n"
+        f"{reference}\n\n"
+        "Sent From:\n"
+        f"{sender}\n\n"
+        "Amount:\n"
+        f"${amount} (CAD)"
+    )
+    return bytes(msg)
 
 
 async def _org_with_live_session(
@@ -327,3 +355,82 @@ async def test_received_money_export_uses_interac_sent_from_as_sender_name(
     assert "JAMES KINGSLEY OWUSU" in csv_text
     assert "046" in csv_text
     assert "C1AKjHSd4MYz" in csv_text
+
+
+async def test_imap_export_reads_mailbox_date_range_without_sessions(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-mailbox-export@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Mailbox Export Org")
+    finance_token = await add_active_member(
+        client,
+        db_session,
+        owner_token,
+        org["id"],
+        "finance-mailbox-export@example.org",
+        "finance",
+        needs_mfa=True,
+    )
+
+    creation_mock = MagicMock()
+    creation_mock.login.return_value = ("OK", [b"done"])
+    creation_mock.status.return_value = ("OK", [b"INBOX (UIDNEXT 99)"])
+    with patch("app.domain.imap_provider.imaplib.IMAP4_SSL", return_value=creation_mock):
+        resp = await client.post(
+            f"/v1/organizations/{org['id']}/connections",
+            json={"provider": "imap", "mailbox": "deposits@gmail.com", "imap_password": "app-pw"},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+    assert resp.status_code == 201, resp.text
+    connection = resp.json()
+
+    await create_parser_profile(client, owner_token, org["id"], sender_patterns=["@payments.interac.ca"])
+
+    in_range = datetime(2026, 9, 13, 12, 16, 35, tzinfo=timezone.utc)
+    out_of_range = datetime(2026, 9, 5, 12, 16, 35, tzinfo=timezone.utc)
+    mailbox_messages = {
+        b"1": _raw_received_money_email(
+            message_id="<in-range@payments.interac.ca>",
+            date=in_range,
+            sender="JAMES KINGSLEY OWUSU",
+            amount="120.00",
+            transfer_message="046",
+            reference="C1AKjHSd4MYz",
+        ),
+        b"2": _raw_received_money_email(
+            message_id="<old@payments.interac.ca>",
+            date=out_of_range,
+            sender="OLDER SENDER",
+            amount="5.00",
+            transfer_message="old",
+            reference="OLDREF123",
+        ),
+    }
+    export_mock = MagicMock()
+
+    def uid_side_effect(command, *args):
+        if command == "search":
+            return ("OK", [b"1 2"])
+        uid = args[0]
+        return ("OK", [(b"BODY", mailbox_messages[uid if isinstance(uid, bytes) else uid.encode()]), b")"])
+
+    export_mock.uid.side_effect = uid_side_effect
+    with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=export_mock):
+        resp = await client.get(
+            f"/v1/organizations/{org['id']}/contribution-export.csv",
+            params={
+                "connection_id": connection["id"],
+                "from_datetime": datetime(2026, 9, 13, 0, 0, tzinfo=timezone.utc).isoformat(),
+                "to_datetime": datetime(2026, 9, 13, 23, 59, tzinfo=timezone.utc).isoformat(),
+            },
+            headers={"Authorization": f"Bearer {finance_token}"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    csv_text = resp.text
+    assert "JAMES KINGSLEY OWUSU" in csv_text
+    assert "120.00" in csv_text
+    assert "046" in csv_text
+    assert "C1AKjHSd4MYz" in csv_text
+    assert "OLDER SENDER" not in csv_text

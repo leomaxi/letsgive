@@ -21,15 +21,21 @@ from app.db.models.contribution_export_template import ContributionExportTemplat
 from app.db.models.mailbox_connection import MailboxConnection, MailboxProviderName
 from app.db.models.membership import Membership, Role
 from app.db.models.organization import Organization
+from app.db.models.parser_profile import ParserProfile
 from app.db.models.reconciliation_item import ReconciliationItem, ReconciliationStatus
 from app.db.models.session import Session
 from app.db.session import get_db
 from app.domain.billing import assert_reports_readable
 from app.domain.audit import record_audit_event
-from app.domain.imap_polling import fetch_imap_message_by_message_id, get_recent_messages
+from app.domain.imap_polling import (
+    fetch_imap_message_by_message_id,
+    fetch_imap_messages_between,
+    get_recent_messages,
+)
 from app.domain.ingestion import build_export_details
 from app.domain.ledger import compute_ledger_totals
 from app.domain.mailbox_providers import get_provider
+from app.domain.parsing import parse_message
 from app.domain.pdf_report import render_session_report_pdf
 from app.domain.rbac import require_roles
 
@@ -67,6 +73,13 @@ def _event_export_value(event: ContributionEvent, key: str) -> str:
     return "" if value is None else str(value)
 
 
+def _row_export_value(row: dict[str, Any], key: str) -> str:
+    value = row.get(key)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return "" if value is None else str(value)
+
+
 def _keyword_list(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -80,6 +93,65 @@ def _matches_keywords(event: ContributionEvent, keywords: list[str]) -> bool:
     haystack = " ".join(str(details.get(key) or "") for key in ("message", "sent_from", "sender_name"))
     haystack = haystack.lower()
     return any(keyword in haystack for keyword in keywords)
+
+
+def _row_matches_keywords(row: dict[str, Any], keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    haystack = " ".join(str(row.get(key) or "") for key in ("message", "sent_from", "sender_name"))
+    haystack = haystack.lower()
+    return any(keyword in haystack for keyword in keywords)
+
+
+def _parsed_export_row(message, profiles: list[ParserProfile]) -> dict[str, Any] | None:
+    parsed_by_profile = [(profile, parse_message(message, profile)) for profile in profiles]
+    candidates = [(profile, parsed) for profile, parsed in parsed_by_profile if parsed.matched_source]
+    best_match = max(candidates, key=lambda c: c[1].match_specificity) if candidates else None
+    if best_match is None:
+        return None
+    _profile, parsed = best_match
+    if not parsed.has_credit_intent or parsed.amount is None:
+        return None
+    details = build_export_details(message)
+    return {
+        **details,
+        "received_at": message.received_at,
+        "amount": parsed.amount,
+        "currency": parsed.currency,
+        "provider_message_id": message.provider_message_id,
+    }
+
+
+async def _email_export_rows(
+    db: AsyncSession,
+    connection: MailboxConnection,
+    from_datetime: datetime,
+    to_datetime: datetime,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ParserProfile)
+        .where(
+            ParserProfile.organization_id == connection.organization_id,
+            ParserProfile.is_active.is_(True),
+        )
+        .order_by(ParserProfile.created_at)
+    )
+    profiles = list(result.scalars().all())
+    if not profiles:
+        return []
+
+    messages = await fetch_imap_messages_between(connection, from_datetime, to_datetime)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for message in messages:
+        if message.provider_message_id in seen:
+            continue
+        seen.add(message.provider_message_id)
+        row = _parsed_export_row(message, profiles)
+        if row is not None:
+            rows.append(row)
+    rows.sort(key=lambda row: row["received_at"])
+    return rows
 
 
 async def _hydrate_missing_export_details(
@@ -442,28 +514,37 @@ async def export_contributions_csv(
         field_keys = template.field_keys
         field_labels = template.field_labels
 
-    result = await db.execute(
-        select(ContributionEvent)
-        .where(
-            ContributionEvent.organization_id == organization_id,
-            ContributionEvent.mailbox_connection_id == connection_id,
-            ContributionEvent.decision == ContributionDecision.ACCEPTED,
-            ContributionEvent.test_mode.is_(False),
-            ContributionEvent.received_at >= from_datetime,
-            ContributionEvent.received_at <= to_datetime,
-        )
-        .order_by(ContributionEvent.received_at)
-    )
-    all_events = list(result.scalars().all())
-    await _hydrate_missing_export_details(db, connection, all_events)
     keyword_terms = _keyword_list(keywords)
-    events = [event for event in all_events if _matches_keywords(event, keyword_terms)]
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow([field_labels.get(key, FIELD_LABELS.get(key, key)) for key in field_keys])
-    for event in events:
-        writer.writerow([_event_export_value(event, key) for key in field_keys])
+    if connection.provider == MailboxProviderName.IMAP:
+        rows = [
+            row
+            for row in await _email_export_rows(db, connection, from_datetime, to_datetime)
+            if _row_matches_keywords(row, keyword_terms)
+        ]
+        for row in rows:
+            writer.writerow([_row_export_value(row, key) for key in field_keys])
+    else:
+        result = await db.execute(
+            select(ContributionEvent)
+            .where(
+                ContributionEvent.organization_id == organization_id,
+                ContributionEvent.mailbox_connection_id == connection_id,
+                ContributionEvent.decision == ContributionDecision.ACCEPTED,
+                ContributionEvent.test_mode.is_(False),
+                ContributionEvent.received_at >= from_datetime,
+                ContributionEvent.received_at <= to_datetime,
+            )
+            .order_by(ContributionEvent.received_at)
+        )
+        all_events = list(result.scalars().all())
+        await _hydrate_missing_export_details(db, connection, all_events)
+        events = [event for event in all_events if _matches_keywords(event, keyword_terms)]
+        for event in events:
+            writer.writerow([_event_export_value(event, key) for key in field_keys])
     buffer.seek(0)
 
     return StreamingResponse(

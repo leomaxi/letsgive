@@ -9,7 +9,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
 
 from sqlalchemy import select
@@ -312,6 +312,51 @@ def _fetch_by_message_id_sync(
         _logout_sync(connection)
 
 
+def _imap_search_date(value: datetime) -> str:
+    return value.strftime("%d-%b-%Y")
+
+
+def _fetch_between_sync(
+    *, host: str, port: int, mailbox: str, password: str, start: datetime, end: datetime
+) -> list[RawMessage]:
+    connection = imaplib.IMAP4_SSL(host, port, timeout=15)
+    try:
+        connection.login(mailbox, password)
+        connection.select("INBOX")
+        # IMAP SEARCH dates are day-granular and BEFORE is exclusive, so
+        # fetch the covering days and then filter exact datetimes after parsing.
+        start_day = start.astimezone(timezone.utc).date()
+        end_day_exclusive = end.astimezone(timezone.utc).date() + timedelta(days=1)
+        typ, data = connection.uid(
+            "search",
+            None,
+            "SINCE",
+            _imap_search_date(datetime.combine(start_day, datetime.min.time(), timezone.utc)),
+            "BEFORE",
+            _imap_search_date(datetime.combine(end_day_exclusive, datetime.min.time(), timezone.utc)),
+        )
+        if typ != "OK" or not data or not data[0]:
+            return []
+
+        messages: list[RawMessage] = []
+        for uid in data[0].split():
+            typ, msg_data = connection.uid("fetch", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not msg_data or msg_data[0] is None:
+                continue
+            try:
+                message = _parse_message(uid, msg_data[0][1]).message
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to parse IMAP message uid=%s from %s during export", uid, mailbox)
+                continue
+            received_at = message.received_at if message.received_at.tzinfo else message.received_at.replace(tzinfo=timezone.utc)
+            received_at = received_at.astimezone(timezone.utc)
+            if start <= received_at <= end:
+                messages.append(message)
+        return messages
+    finally:
+        _logout_sync(connection)
+
+
 async def fetch_imap_message_by_message_id(
     connection: MailboxConnection, provider_message_id: str
 ) -> RawMessage | None:
@@ -331,6 +376,30 @@ async def fetch_imap_message_by_message_id(
     except (OSError, imaplib.IMAP4.error):
         logger.exception("Failed to fetch IMAP message %s for export", provider_message_id)
         return None
+
+
+async def fetch_imap_messages_between(
+    connection: MailboxConnection, start: datetime, end: datetime
+) -> list[RawMessage]:
+    if connection.provider != MailboxProviderName.IMAP:
+        return []
+    if not connection.imap_host or not connection.imap_port or not connection.imap_password:
+        return []
+    start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+    try:
+        return await asyncio.to_thread(
+            _fetch_between_sync,
+            host=connection.imap_host,
+            port=connection.imap_port,
+            mailbox=connection.mailbox,
+            password=connection.imap_password,
+            start=start_utc.astimezone(timezone.utc),
+            end=end_utc.astimezone(timezone.utc),
+        )
+    except (OSError, imaplib.IMAP4.error):
+        logger.exception("Failed to fetch IMAP messages for export")
+        return []
 
 
 def _mark_seen_on_connection_sync(connection: imaplib.IMAP4_SSL, uids: list[str]) -> None:
