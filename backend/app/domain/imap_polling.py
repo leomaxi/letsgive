@@ -174,7 +174,7 @@ def _extract_body(msg: email.message.Message) -> str:
 
 def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
     msg = email.message_from_bytes(raw_bytes)
-    sender = email.utils.parseaddr(msg.get("From", ""))[1] or msg.get("From", "unknown")
+    sender = msg.get("From", "unknown")
     subject = _decode_str(msg.get("Subject"))
 
     received_at = datetime.now(timezone.utc)

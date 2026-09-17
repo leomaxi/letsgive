@@ -331,12 +331,14 @@ export const reportApi = {
     ),
 
   contributionExportUrl: (orgId: string, params: {
+    connection_id: string;
     from_datetime: string;
     to_datetime: string;
     keywords?: string;
     template_id?: string;
   }) => {
     const qs = new URLSearchParams();
+    qs.set("connection_id", params.connection_id);
     qs.set("from_datetime", params.from_datetime);
     qs.set("to_datetime", params.to_datetime);
     if (params.keywords) qs.set("keywords", params.keywords);

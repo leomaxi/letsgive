@@ -59,7 +59,7 @@ export default function ContributionExportPage() {
   const [toDateTime, setToDateTime] = useState(nowDefaults.to);
   const [keywords, setKeywords] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const [sampleConnectionId, setSampleConnectionId] = useState("");
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedFields, setSelectedFields] = useState<string[]>(DEFAULT_FIELD_KEYS);
   const [templateName, setTemplateName] = useState("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -80,8 +80,8 @@ export default function ContributionExportPage() {
   });
 
   const fieldsQuery = useQuery({
-    queryKey: ["contribution-export-fields", activeOrg?.id, sampleConnectionId],
-    queryFn: () => reportApi.sampleContributionExportFields(activeOrg!.id, sampleConnectionId || undefined),
+    queryKey: ["contribution-export-fields", activeOrg?.id, selectedConnectionId],
+    queryFn: () => reportApi.sampleContributionExportFields(activeOrg!.id, selectedConnectionId || undefined),
     enabled: false,
   });
 
@@ -92,7 +92,7 @@ export default function ContributionExportPage() {
         field_keys: selectedFields,
         field_labels: Object.fromEntries((fieldsQuery.data ?? []).map((field) => [field.key, field.label])),
         sample: {
-          source_connection_id: sampleConnectionId || null,
+          source_connection_id: selectedConnectionId || null,
           field_keys: selectedFields,
         },
       }),
@@ -132,8 +132,13 @@ export default function ContributionExportPage() {
 
   function onExport() {
     if (!activeOrg) return;
+    if (!selectedConnectionId) {
+      setDownloadError("Select a connected mailbox before exporting.");
+      return;
+    }
     downloadCsv(
       reportApi.contributionExportUrl(activeOrg.id, {
+        connection_id: selectedConnectionId,
         from_datetime: toIsoFromLocal(fromDateTime),
         to_datetime: toIsoFromLocal(toDateTime),
         keywords: keywords.trim() || undefined,
@@ -148,7 +153,7 @@ export default function ContributionExportPage() {
     <div className="space-y-6">
       <PageHeader
         title="Contribution export"
-        description="Export accepted contribution records for accounting and record keeping."
+        description="Export accepted received-money email records for accounting and record keeping."
       />
 
       <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
@@ -156,6 +161,22 @@ export default function ContributionExportPage() {
           <h2 className="mb-4 text-sm font-semibold uppercase text-slate-500 dark:text-slate-400">
             Export CSV
           </h2>
+          <div className="mb-3">
+            <Field label="Connected mailbox" htmlFor="exportMailbox">
+              <Select
+                id="exportMailbox"
+                value={selectedConnectionId}
+                onChange={(e) => setSelectedConnectionId(e.target.value)}
+              >
+                <option value="">Select a connected mailbox</option>
+                {connectedConnections.map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.mailbox}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="From date/time" htmlFor="exportFrom">
               <Input
@@ -198,7 +219,7 @@ export default function ContributionExportPage() {
               </Select>
             </Field>
             <ErrorText>{downloadError}</ErrorText>
-            <Button onClick={onExport} disabled={!fromDateTime || !toDateTime}>
+            <Button onClick={onExport} disabled={!selectedConnectionId || !fromDateTime || !toDateTime}>
               Download CSV
             </Button>
           </div>
@@ -248,19 +269,23 @@ export default function ContributionExportPage() {
               Populate export fields
             </h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Sample recent deposit messages, then choose the columns to save as a template.
+              Sample recent received-money emails, then choose the columns to save as a template.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Select value={sampleConnectionId} onChange={(e) => setSampleConnectionId(e.target.value)}>
-              <option value="">All connected mailboxes</option>
+            <Select value={selectedConnectionId} onChange={(e) => setSelectedConnectionId(e.target.value)}>
+              <option value="">Select a connected mailbox</option>
               {connectedConnections.map((connection) => (
                 <option key={connection.id} value={connection.id}>
                   {connection.mailbox}
                 </option>
               ))}
             </Select>
-            <Button variant="secondary" disabled={fieldsQuery.isFetching} onClick={() => fieldsQuery.refetch()}>
+            <Button
+              variant="secondary"
+              disabled={fieldsQuery.isFetching || !selectedConnectionId}
+              onClick={() => fieldsQuery.refetch()}
+            >
               {fieldsQuery.isFetching ? "Populating..." : "Populate export fields"}
             </Button>
           </div>
@@ -291,7 +316,7 @@ export default function ContributionExportPage() {
             ))}
           </div>
         ) : (
-          <EmptyState title="No sampled fields" description="Use Populate export fields after a mailbox has fetched deposit messages." />
+          <EmptyState title="No sampled fields" description="Use Populate export fields after a mailbox has fetched received-money emails." />
         )}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">

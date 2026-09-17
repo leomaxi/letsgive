@@ -31,6 +31,9 @@ def _fingerprint(message: RawMessage) -> str:
 
 
 def _extract_reference_number(text: str) -> str | None:
+    labeled = _extract_labeled_value(text, ("Reference Number", "Reference", "Confirmation", "Transaction"))
+    if labeled:
+        return labeled
     patterns = [
         r"(?:reference|confirmation|transaction|ref(?:erence)?\s*(?:no\.?|number|#)?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{4,})",
         r"\b([A-Z]{2,}\d{5,}[A-Z0-9-]*)\b",
@@ -42,13 +45,43 @@ def _extract_reference_number(text: str) -> str | None:
     return None
 
 
+def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str | None:
+    normalized = re.sub(r"\r\n?", "\n", text)
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    stop_labels = (
+        "Message",
+        "Date",
+        "Reference Number",
+        "Reference",
+        "Sent From",
+        "From",
+        "Amount",
+        "Account",
+        "Transfer Details",
+    )
+    stop_pattern = "|".join(re.escape(label) for label in stop_labels)
+    patterns = [
+        rf"(?:^|\n)\s*(?:{label_pattern})\s*:\s*(.+?)(?=\n\s*(?:{stop_pattern})\s*:|\n{{2,}}|$)",
+        rf"\b(?:{label_pattern})\s*:\s*([^\n]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE | re.DOTALL)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;")
+            if value:
+                return value
+    return None
+
+
 def _export_details_from_message(message: RawMessage) -> dict[str, str | None]:
     sender_name, sender_email = parseaddr(message.sender)
     full_text = f"{message.subject}\n{message.body}".strip()
+    transfer_sender = _extract_labeled_value(full_text, ("Sent From",))
+    transfer_message = _extract_labeled_value(full_text, ("Message",))
     return {
-        "sender_name": sender_name or sender_email or message.sender,
+        "sender_name": transfer_sender or sender_name or sender_email or message.sender,
         "sent_from": message.sender,
-        "message": full_text,
+        "message": transfer_message or full_text,
         "reference_number": _extract_reference_number(full_text),
     }
 

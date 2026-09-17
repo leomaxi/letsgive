@@ -354,12 +354,15 @@ async def sample_export_fields(
                 if value and value not in samples[key]:
                     samples[key].append(value)
 
+    conditions = [
+        ContributionEvent.organization_id == organization_id,
+        ContributionEvent.decision == ContributionDecision.ACCEPTED,
+    ]
+    if connection_id:
+        conditions.append(ContributionEvent.mailbox_connection_id == connection_id)
     result = await db.execute(
         select(ContributionEvent)
-        .where(
-            ContributionEvent.organization_id == organization_id,
-            ContributionEvent.decision == ContributionDecision.ACCEPTED,
-        )
+        .where(*conditions)
         .order_by(ContributionEvent.received_at.desc())
         .limit(10)
     )
@@ -378,6 +381,7 @@ async def sample_export_fields(
 @org_reports_router.get(".csv")
 async def export_contributions_csv(
     organization_id: str,
+    connection_id: str = Query(...),
     from_datetime: datetime = Query(...),
     to_datetime: datetime = Query(...),
     keywords: str | None = None,
@@ -388,6 +392,11 @@ async def export_contributions_csv(
     require_roles(membership, Role.OWNER, Role.FINANCE)
     if from_datetime > to_datetime:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="From date must be before to date.")
+    connection = await db.get(MailboxConnection, connection_id)
+    if connection is None or connection.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
+    if connection.status.value != "connected":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select a connected mailbox.")
 
     field_keys = DEFAULT_EXPORT_FIELDS
     field_labels = {key: FIELD_LABELS[key] for key in field_keys}
@@ -402,6 +411,7 @@ async def export_contributions_csv(
         select(ContributionEvent)
         .where(
             ContributionEvent.organization_id == organization_id,
+            ContributionEvent.mailbox_connection_id == connection_id,
             ContributionEvent.decision == ContributionDecision.ACCEPTED,
             ContributionEvent.test_mode.is_(False),
             ContributionEvent.received_at >= from_datetime,

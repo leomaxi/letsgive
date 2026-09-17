@@ -201,6 +201,7 @@ async def test_owner_can_export_contributions_for_period_with_keywords_and_templ
     resp = await client.get(
         f"/v1/organizations/{org['id']}/contribution-export.csv",
         params={
+            "connection_id": connection["id"],
             "from_datetime": (now - timedelta(minutes=5)).isoformat(),
             "to_datetime": (now + timedelta(minutes=5)).isoformat(),
             "keywords": "tithe, missions",
@@ -214,6 +215,16 @@ async def test_owner_can_export_contributions_for_period_with_keywords_and_templ
     assert "25.00" in csv_text
     assert "ABC12345" in csv_text
     assert "40.00" not in csv_text
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export.csv",
+        params={
+            "from_datetime": (now - timedelta(minutes=5)).isoformat(),
+            "to_datetime": (now + timedelta(minutes=5)).isoformat(),
+        },
+        headers={"Authorization": f"Bearer {finance_token}"},
+    )
+    assert resp.status_code == 422, resp.text
 
 
 async def test_media_cannot_manage_or_run_contribution_export(
@@ -231,3 +242,78 @@ async def test_media_cannot_manage_or_run_contribution_export(
         headers={"Authorization": f"Bearer {media_token}"},
     )
     assert resp.status_code == 403, resp.text
+
+
+async def test_received_money_export_uses_interac_sent_from_as_sender_name(
+    client: AsyncClient, db_session: AsyncSession, notifier: CapturingNotifier
+):
+    owner_token = await register_and_login(client, "owner-interac-export@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Interac Export Org")
+    finance_token = await add_active_member(
+        client,
+        db_session,
+        owner_token,
+        org["id"],
+        "finance-interac-export@example.org",
+        "finance",
+        needs_mfa=True,
+    )
+    media_token = await add_active_member(
+        client, db_session, owner_token, org["id"], "media-interac-export@example.org", "media"
+    )
+    connection = await create_fake_connection(client, owner_token, org["id"])
+    await create_parser_profile(client, owner_token, org["id"], sender_patterns=["@payments.interac.ca"])
+    session = await create_session(client, media_token, org["id"], mailbox_connection_id=connection["id"])
+    authorized = await approve_session(client, notifier, media_token, session["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        json={"expected_version": authorized["version"]},
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    now = datetime.now(timezone.utc)
+    resp = await deliver_webhook(
+        client,
+        db_session,
+        connection["id"],
+        provider_message_id="interac-received-money",
+        sender="JAMES KINGSLEY OWUSU <notify@payments.interac.ca>",
+        subject="Funds Deposited",
+        body=(
+            "Hi ST. JOHN'S METHODIST CHURCH,\n"
+            "Funds Deposited!\n"
+            "$120.00\n"
+            "Your funds have been automatically deposited into your account at Scotiabank.\n\n"
+            "Transfer Details\n"
+            "Message:\n"
+            "046\n\n"
+            "Date:\n"
+            "Sept 13, 2026\n\n"
+            "Reference Number:\n"
+            "C1AKjHSd4MYz\n\n"
+            "Sent From:\n"
+            "JAMES KINGSLEY OWUSU\n\n"
+            "Amount:\n"
+            "$120.00 (CAD)"
+        ),
+        received_at=now,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["decision"] == "accepted"
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export.csv",
+        params={
+            "connection_id": connection["id"],
+            "from_datetime": (now - timedelta(minutes=5)).isoformat(),
+            "to_datetime": (now + timedelta(minutes=5)).isoformat(),
+        },
+        headers={"Authorization": f"Bearer {finance_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    csv_text = resp.text
+    assert "JAMES KINGSLEY OWUSU" in csv_text
+    assert "046" in csv_text
+    assert "C1AKjHSd4MYz" in csv_text
