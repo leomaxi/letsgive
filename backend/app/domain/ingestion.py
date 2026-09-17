@@ -75,12 +75,14 @@ def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str | None:
 
 def build_export_details(message: RawMessage) -> dict[str, str | None]:
     sender_name, sender_email = parseaddr(message.sender)
+    _reply_to_name, reply_to_email = parseaddr(message.reply_to or "")
     full_text = f"{message.subject}\n{message.body}".strip()
     transfer_sender = _extract_labeled_value(full_text, ("Sent From",))
     transfer_message = _extract_labeled_value(full_text, ("Message",))
     return {
         "sender_name": transfer_sender or sender_name or sender_email or message.sender,
         "sent_from": message.sender,
+        "reply_to": reply_to_email or sender_email or None,
         "message": transfer_message or full_text,
         "reference_number": _extract_reference_number(full_text),
     }

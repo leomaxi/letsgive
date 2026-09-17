@@ -2,6 +2,7 @@ import csv
 import io
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -46,6 +47,7 @@ DEFAULT_EXPORT_FIELDS = ["sender_name", "received_at", "amount", "message", "ref
 FIELD_LABELS = {
     "sender_name": "Sender's name - Sent from",
     "sent_from": "Sent from",
+    "reply_to": "Reply To (sender's email)",
     "received_at": "Date time",
     "amount": "Amount",
     "currency": "Currency",
@@ -59,10 +61,42 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _event_export_value(event: ContributionEvent, key: str) -> str:
+def _export_timezone(timezone_name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unknown export timezone.",
+        ) from exc
+
+
+def _as_export_range(
+    from_datetime: datetime, to_datetime: datetime, export_tz: ZoneInfo
+) -> tuple[datetime, datetime]:
+    start = (
+        from_datetime.replace(tzinfo=export_tz)
+        if from_datetime.tzinfo is None
+        else from_datetime.astimezone(export_tz)
+    )
+    end = (
+        to_datetime.replace(tzinfo=export_tz)
+        if to_datetime.tzinfo is None
+        else to_datetime.astimezone(export_tz)
+    )
+    return start.astimezone(ZoneInfo("UTC")), end.astimezone(ZoneInfo("UTC"))
+
+
+def _format_export_datetime(value: datetime, export_tz: ZoneInfo) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(export_tz).isoformat()
+
+
+def _event_export_value(event: ContributionEvent, key: str, export_tz: ZoneInfo) -> str:
     details: dict[str, Any] = event.export_details or {}
     if key == "received_at":
-        return event.received_at.isoformat()
+        return _format_export_datetime(event.received_at, export_tz)
     if key == "amount":
         return str(event.amount) if event.amount is not None else ""
     if key == "currency":
@@ -73,10 +107,10 @@ def _event_export_value(event: ContributionEvent, key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _row_export_value(row: dict[str, Any], key: str) -> str:
+def _row_export_value(row: dict[str, Any], key: str, export_tz: ZoneInfo) -> str:
     value = row.get(key)
     if isinstance(value, datetime):
-        return value.isoformat()
+        return _format_export_datetime(value, export_tz)
     return "" if value is None else str(value)
 
 
@@ -440,6 +474,9 @@ async def sample_export_fields(
 ) -> list[ContributionExportFieldOut]:
     require_roles(membership, Role.OWNER, Role.FINANCE)
 
+    org = await db.get(Organization, organization_id)
+    export_tz = _export_timezone(org.timezone) if org is not None else ZoneInfo("UTC")
+
     samples: dict[str, list[str]] = {key: [] for key in FIELD_LABELS}
     connection = None
 
@@ -451,6 +488,7 @@ async def sample_export_fields(
             values = {
                 "sender_name": entry.sender,
                 "sent_from": entry.sender,
+                "reply_to": entry.reply_to,
                 "received_at": entry.received_at.isoformat(),
                 "message": entry.body_snippet or entry.subject,
             }
@@ -475,7 +513,7 @@ async def sample_export_fields(
         await _hydrate_missing_export_details(db, connection, events)
     for event in events:
         for key in FIELD_LABELS:
-            value = _event_export_value(event, key)
+            value = _event_export_value(event, key, export_tz)
             if value and value not in samples[key]:
                 samples[key].append(value)
 
@@ -505,6 +543,9 @@ async def export_contributions_csv(
     if connection.status.value != "connected":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select a connected mailbox.")
 
+    org = await db.get(Organization, organization_id)
+    export_tz = _export_timezone(org.timezone) if org is not None else ZoneInfo("UTC")
+
     field_keys = DEFAULT_EXPORT_FIELDS
     field_labels = {key: FIELD_LABELS[key] for key in field_keys}
     if template_id:
@@ -526,7 +567,7 @@ async def export_contributions_csv(
             if _row_matches_keywords(row, keyword_terms)
         ]
         for row in rows:
-            writer.writerow([_row_export_value(row, key) for key in field_keys])
+            writer.writerow([_row_export_value(row, key, export_tz) for key in field_keys])
     else:
         result = await db.execute(
             select(ContributionEvent)
@@ -544,7 +585,7 @@ async def export_contributions_csv(
         await _hydrate_missing_export_details(db, connection, all_events)
         events = [event for event in all_events if _matches_keywords(event, keyword_terms)]
         for event in events:
-            writer.writerow([_event_export_value(event, key) for key in field_keys])
+            writer.writerow([_event_export_value(event, key, export_tz) for key in field_keys])
     buffer.seek(0)
 
     return StreamingResponse(

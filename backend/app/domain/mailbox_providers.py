@@ -22,6 +22,7 @@ class RawMessage:
     subject: str
     body: str
     received_at: datetime
+    reply_to: str | None = None
 
 
 class MailboxProvider(Protocol):

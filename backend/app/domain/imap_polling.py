@@ -74,6 +74,7 @@ class RecentMessageLogEntry:
     fetched_at: datetime
     received_at: datetime
     sender: str
+    reply_to: str | None
     subject: str
     body_snippet: str
     decision: str
@@ -92,6 +93,7 @@ def _record_recent_message(
             fetched_at=utcnow(),
             received_at=message.received_at,
             sender=message.sender,
+            reply_to=message.reply_to,
             subject=message.subject,
             body_snippet=message.body[:500],
             decision=decision,
@@ -176,6 +178,7 @@ def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
     msg = email.message_from_bytes(raw_bytes)
     sender = msg.get("From", "unknown")
     subject = _decode_str(msg.get("Subject"))
+    reply_to = msg.get("Reply-To")
 
     received_at = datetime.now(timezone.utc)
     date_header = msg.get("Date")
@@ -202,6 +205,7 @@ def _parse_message(uid: bytes, raw_bytes: bytes) -> _FetchedMessage:
             subject=subject,
             body=_extract_body(msg),
             received_at=received_at,
+            reply_to=reply_to.strip() if reply_to else None,
         ),
     )
 
