@@ -78,9 +78,15 @@ def _require_billing_access(membership: Membership) -> None:
 async def _current_billing_subscription(
     db: AsyncSession, organization_id: str
 ) -> BillingSubscription | None:
+    # A checkout that was never approved on PayPal (abandoned, canceled, or
+    # refused by PayPal) is not the org's subscription and must not hide the
+    # real one or make a free plan look billed.
     result = await db.execute(
         select(BillingSubscription)
-        .where(BillingSubscription.organization_id == organization_id)
+        .where(
+            BillingSubscription.organization_id == organization_id,
+            BillingSubscription.status != BillingSubscriptionStatus.APPROVAL_PENDING,
+        )
         .order_by(BillingSubscription.created_at.desc())
     )
     return result.scalars().first()

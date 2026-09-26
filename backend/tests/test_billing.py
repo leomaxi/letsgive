@@ -1070,3 +1070,46 @@ async def test_late_approval_of_older_checkout_is_canceled_not_applied(
     assert fake_paypal.canceled == [old.provider_subscription_id]
     assert old.status == BillingSubscriptionStatus.CANCELED
     assert org.plan_id == premium.id
+
+
+async def test_abandoned_checkout_is_not_shown_as_current_subscription(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token, org = await _owner_with_org(client, "abandoned")
+    premium = (await db_session.execute(select(Plan).where(Plan.key == "premium"))).scalar_one()
+    db_session.add(
+        BillingSubscription(
+            organization_id=org["id"],
+            plan_id=premium.id,
+            provider_subscription_id="I-ABANDONED",
+            status=BillingSubscriptionStatus.APPROVAL_PENDING,
+            currency="USD",
+            amount=Decimal("13.00"),
+            interval=BillingInterval.MONTHLY,
+        )
+    )
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # Free Starter org whose PayPal checkout was refused/canceled: no subscription.
+    overview = await client.get(f"/v1/organizations/{org['id']}/billing", headers=headers)
+    assert overview.status_code == 200, overview.text
+    assert overview.json()["subscription"] is None
+
+    # An org with a real subscription keeps seeing it, not the newer pending one.
+    growth = (await db_session.execute(select(Plan).where(Plan.key == "growth"))).scalar_one()
+    db_session.add(
+        BillingSubscription(
+            organization_id=org["id"],
+            plan_id=growth.id,
+            provider_subscription_id="I-REAL",
+            status=BillingSubscriptionStatus.ACTIVE,
+            currency="USD",
+            amount=Decimal("7.00"),
+            interval=BillingInterval.MONTHLY,
+            created_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+    )
+    await db_session.commit()
+    overview = await client.get(f"/v1/organizations/{org['id']}/billing", headers=headers)
+    assert overview.json()["subscription"]["provider_subscription_id"] == "I-REAL"

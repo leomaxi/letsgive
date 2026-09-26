@@ -101,11 +101,14 @@ async def _notify_owners_on_plan_price_change(
 async def _subscription_period_end(db: AsyncSession, org: Organization) -> datetime | None:
     result = await db.execute(
         select(BillingSubscription)
-        .where(BillingSubscription.organization_id == org.id)
+        .where(
+            BillingSubscription.organization_id == org.id,
+            BillingSubscription.current_period_end.is_not(None),
+        )
         .order_by(BillingSubscription.created_at.desc())
     )
     subscription = result.scalars().first()
-    if subscription is not None and subscription.current_period_end is not None:
+    if subscription is not None:
         return subscription.current_period_end
     return org.plan_expires_at
 
