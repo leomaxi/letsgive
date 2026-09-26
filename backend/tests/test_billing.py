@@ -761,12 +761,15 @@ async def test_checkout_auto_creates_paypal_plans_when_unmapped(
             resp = await client.post(
                 f"/v1/organizations/{org['id']}/billing/paypal-subscription",
                 json={"plan_id": plan.id},
-                headers={"Authorization": f"Bearer {owner_token}"},
+                headers={"Authorization": f"Bearer {owner_token}", "Origin": "https://letsgive.ca"},
             )
             assert resp.status_code == 200, resp.text
     finally:
         app.dependency_overrides.pop(get_paypal_client, None)
 
+    # PayPal returns the payer to the site they started from, never localhost.
+    assert fake_paypal.subscriptions[0]["return_url"] == "https://letsgive.ca/billing?paypal=approved"
+    assert fake_paypal.subscriptions[0]["cancel_url"] == "https://letsgive.ca/billing?paypal=canceled"
     # One product and one monthly plan, reused by the second checkout.
     assert len(fake_paypal.products) == 1
     assert len(fake_paypal.plans) == 1

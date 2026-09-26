@@ -48,7 +48,24 @@ export default function BillingPage() {
   useEffect(() => {
     if (!activeOrg || activeOrg.role !== "owner" || confirmedRevision.current) return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("paypal") !== "revised") return;
+    const outcome = params.get("paypal");
+    if (outcome === "approved" || outcome === "canceled") {
+      confirmedRevision.current = true;
+      if (outcome === "approved") {
+        setNotice(
+          "Subscription approved on PayPal. Your plan switches over as soon as PayPal confirms it, usually within a minute."
+        );
+        queryClient.invalidateQueries({ queryKey: ["billing-overview", activeOrg.id] });
+        refetch();
+      } else {
+        setNotice("PayPal checkout was canceled. Nothing was charged and your plan is unchanged.");
+      }
+      params.delete("paypal");
+      const qs = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+      return;
+    }
+    if (outcome !== "revised") return;
     confirmedRevision.current = true;
     billingApi
       .confirmPayPalRevision(activeOrg.id)

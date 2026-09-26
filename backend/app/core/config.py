@@ -62,8 +62,13 @@ class Settings(BaseSettings):
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
     paypal_webhook_id: str = ""
-    paypal_return_url: str = "http://localhost:5173/billing?paypal=approved"
-    paypal_cancel_url: str = "http://localhost:5173/billing?paypal=canceled"
+    # Where PayPal sends the payer back to. Leave blank (recommended) to use
+    # the site the checkout was started from, e.g. https://letsgive.ca/billing.
+    # A hardcoded localhost default here once sent production payers back to
+    # http://localhost:5173 after PayPal. Set only if the public site URL
+    # differs from what browsers send as their Origin.
+    paypal_return_url: str = ""
+    paypal_cancel_url: str = ""
 
 
 @lru_cache

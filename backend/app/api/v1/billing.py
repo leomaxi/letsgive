@@ -56,6 +56,20 @@ def _approval_url(response: dict) -> str:
     )
 
 
+def _paypal_redirect_urls(request: Request, outcome: str) -> tuple[str, str]:
+    """Return/cancel URLs for a PayPal approval, pointing back at the site the
+    owner is actually using. The API has no CORS, so an authenticated call
+    always comes from the app's own origin; configured URLs still win."""
+    settings = get_settings()
+    origin = request.headers.get("origin")
+    base_url = origin.rstrip("/") if origin else str(request.base_url).rstrip("/")
+    return_url = settings.paypal_return_url or f"{base_url}/billing?paypal={outcome}"
+    if settings.paypal_return_url and outcome != "approved":
+        return_url = settings.paypal_return_url.replace("paypal=approved", f"paypal={outcome}")
+    cancel_url = settings.paypal_cancel_url or f"{base_url}/billing?paypal=canceled"
+    return return_url, cancel_url
+
+
 def _require_billing_access(membership: Membership) -> None:
     if membership.role not in {Role.OWNER, Role.FINANCE}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Billing access required.")
@@ -211,7 +225,7 @@ async def start_paypal_subscription(
             detail="This plan does not require a PayPal subscription.",
         )
 
-    settings = get_settings()
+    return_url, cancel_url = _paypal_redirect_urls(request, "approved")
     quote = await quote_subscription(
         db,
         plan=plan,
@@ -230,8 +244,8 @@ async def start_paypal_subscription(
             regular_amount=quote.regular_amount,
             currency="USD",
         ),
-        return_url=settings.paypal_return_url,
-        cancel_url=settings.paypal_cancel_url,
+        return_url=return_url,
+        cancel_url=cancel_url,
         request_id=f"sub-{org.id}-{plan.id}-{payload.interval.value}-{utcnow():%Y%m%d%H%M}",
     )
     provider_subscription_id = response.get("id")
@@ -308,7 +322,7 @@ async def revise_paypal_subscription(
     provider_plan_id = await ensure_paypal_plan_id(
         db, plan=plan, interval=subscription.interval, paypal=paypal
     )
-    settings = get_settings()
+    return_url, cancel_url = _paypal_redirect_urls(request, "revised")
     response = await paypal.revise_subscription(
         subscription.provider_subscription_id,
         plan_id=provider_plan_id,
@@ -318,8 +332,8 @@ async def revise_paypal_subscription(
             regular_amount=quote.regular_amount,
             currency=subscription.currency,
         ),
-        return_url=settings.paypal_return_url.replace("paypal=approved", "paypal=revised"),
-        cancel_url=settings.paypal_cancel_url,
+        return_url=return_url,
+        cancel_url=cancel_url,
         request_id=f"revise-{subscription.id}-{utcnow():%Y%m%d%H%M}",
     )
     await record_audit_event(
