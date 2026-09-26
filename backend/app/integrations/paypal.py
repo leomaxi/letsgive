@@ -75,48 +75,135 @@ class PayPalClient:
             return {}
         return response.json()
 
+    async def create_product(self, *, name: str, request_id: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/catalogs/products",
+            request_id=request_id,
+            json={"name": name, "type": "SERVICE", "category": "SOFTWARE"},
+        )
+
+    async def create_plan(
+        self,
+        *,
+        product_id: str,
+        name: str,
+        interval: str,
+        price: Decimal,
+        currency: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Creates a billing plan with two cycles: sequence 1 is an intro
+        cycle (used for promotional pricing; when no promotion applies it is
+        overridden to one cycle at the regular price) and sequence 2 is the
+        open-ended regular cycle. PayPal subscription overrides can change
+        each cycle's price and count but not its frequency, which is why
+        monthly and yearly each need their own plan."""
+        interval_unit = "YEAR" if interval == "yearly" else "MONTH"
+        money = {"fixed_price": {"value": f"{price:.2f}", "currency_code": currency}}
+        frequency = {"interval_unit": interval_unit, "interval_count": 1}
+        return await self._request(
+            "POST",
+            "/v1/billing/plans",
+            request_id=request_id,
+            json={
+                "product_id": product_id,
+                "name": name[:127],
+                "status": "ACTIVE",
+                "billing_cycles": [
+                    {
+                        "sequence": 1,
+                        "tenure_type": "TRIAL",
+                        "total_cycles": 1,
+                        "frequency": frequency,
+                        "pricing_scheme": money,
+                    },
+                    {
+                        "sequence": 2,
+                        "tenure_type": "REGULAR",
+                        "total_cycles": 0,
+                        "frequency": frequency,
+                        "pricing_scheme": money,
+                    },
+                ],
+                "payment_preferences": {
+                    "auto_bill_outstanding": True,
+                    "payment_failure_threshold": 2,
+                },
+            },
+        )
+
+    @staticmethod
+    def billing_cycle_overrides(
+        *, intro_amount: Decimal, intro_cycles: int, regular_amount: Decimal, currency: str
+    ) -> list[dict[str, Any]]:
+        def money(value: Decimal) -> dict[str, Any]:
+            return {"fixed_price": {"value": f"{value:.2f}", "currency_code": currency}}
+
+        return [
+            {"sequence": 1, "total_cycles": max(intro_cycles, 1), "pricing_scheme": money(intro_amount)},
+            {"sequence": 2, "total_cycles": 0, "pricing_scheme": money(regular_amount)},
+        ]
+
     async def create_subscription(
         self,
         *,
         plan_id: str,
         custom_id: str,
-        amount: Decimal | None = None,
-        currency: str | None = None,
+        billing_cycles: list[dict[str, Any]],
         return_url: str,
         cancel_url: str,
         request_id: str,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "plan_id": plan_id,
-            "custom_id": custom_id,
-            "application_context": {
-                "brand_name": "Let's Give",
-                "locale": "en-US",
-                "shipping_preference": "NO_SHIPPING",
-                "user_action": "SUBSCRIBE_NOW",
-                "return_url": return_url,
-                "cancel_url": cancel_url,
-            },
-        }
-        if amount is not None and currency is not None:
-            payload["plan"] = {
-                "billing_cycles": [
-                    {
-                        "sequence": 1,
-                        "pricing_scheme": {
-                            "fixed_price": {
-                                "value": f"{amount:.2f}",
-                                "currency_code": currency,
-                            }
-                        },
-                    }
-                ]
-            }
         return await self._request(
             "POST",
             "/v1/billing/subscriptions",
             request_id=request_id,
-            json=payload,
+            json={
+                "plan_id": plan_id,
+                "custom_id": custom_id,
+                "plan": {"billing_cycles": billing_cycles},
+                "application_context": self._application_context(return_url, cancel_url),
+            },
+        )
+
+    async def revise_subscription(
+        self,
+        provider_subscription_id: str,
+        *,
+        plan_id: str,
+        billing_cycles: list[dict[str, Any]],
+        return_url: str,
+        cancel_url: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Pricing changes on a live subscription need the payer's consent;
+        PayPal answers with an approve link the owner must follow."""
+        return await self._request(
+            "POST",
+            f"/v1/billing/subscriptions/{provider_subscription_id}/revise",
+            request_id=request_id,
+            json={
+                "plan_id": plan_id,
+                "plan": {"billing_cycles": billing_cycles},
+                "application_context": self._application_context(return_url, cancel_url),
+            },
+        )
+
+    @staticmethod
+    def _application_context(return_url: str, cancel_url: str) -> dict[str, Any]:
+        return {
+            "brand_name": "Let's Give",
+            "locale": "en-US",
+            "shipping_preference": "NO_SHIPPING",
+            "user_action": "SUBSCRIBE_NOW",
+            "return_url": return_url,
+            "cancel_url": cancel_url,
+        }
+
+    async def get_subscription(self, provider_subscription_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET", f"/v1/billing/subscriptions/{provider_subscription_id}?fields=plan"
         )
 
     async def cancel_subscription(self, provider_subscription_id: str, reason: str) -> None:

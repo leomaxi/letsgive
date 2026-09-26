@@ -20,6 +20,6 @@ async def receive_paypal_webhook(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid PayPal webhook signature.",
         )
-    await apply_paypal_webhook(db, event)
+    await apply_paypal_webhook(db, event, paypal)
     await db.commit()
     return {"status": "processed"}

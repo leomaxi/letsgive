@@ -12,6 +12,7 @@ import { adminApi } from "@/lib/endpoints";
 // why the admin side doesn't need the tenant Notification mechanism at all).
 const NAV_ITEMS = [
   { to: "/admin/organizations", label: "Organizations" },
+  { to: "/admin/pricing", label: "Pricing" },
   { to: "/admin/tickets", label: "Tickets" },
 ] as const;
 

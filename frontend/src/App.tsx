@@ -39,6 +39,7 @@ const SupportTicketsPage = lazy(() => import("@/pages/SupportTicketsPage"));
 const SupportTicketDetailPage = lazy(() => import("@/pages/SupportTicketDetailPage"));
 const AdminOrganizationsPage = lazy(() => import("@/pages/admin/AdminOrganizationsPage"));
 const AdminOrganizationDetailPage = lazy(() => import("@/pages/admin/AdminOrganizationDetailPage"));
+const AdminPricingPage = lazy(() => import("@/pages/admin/AdminPricingPage"));
 const AdminTicketsPage = lazy(() => import("@/pages/admin/AdminTicketsPage"));
 const AdminTicketDetailPage = lazy(() => import("@/pages/admin/AdminTicketDetailPage"));
 
@@ -153,6 +154,7 @@ export default function App() {
             <Route path="/admin" element={<Navigate to="/admin/organizations" replace />} />
             <Route path="/admin/organizations" element={<AdminOrganizationsPage />} />
             <Route path="/admin/organizations/:orgId" element={<AdminOrganizationDetailPage />} />
+            <Route path="/admin/pricing" element={<AdminPricingPage />} />
             <Route path="/admin/tickets" element={<AdminTicketsPage />} />
             <Route path="/admin/tickets/:ticketId" element={<AdminTicketDetailPage />} />
           </Route>

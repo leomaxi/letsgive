@@ -71,12 +71,20 @@ async def assert_can_create_session(db: AsyncSession, org: Organization) -> None
         )
     )
     count = result.scalar_one()
-    if count >= plan.max_sessions_per_month:
+    bonus_sessions = 0
+    if (
+        org.bonus_sessions > 0
+        and org.bonus_sessions_expires_at is not None
+        and org.bonus_sessions_expires_at > now
+    ):
+        bonus_sessions = org.bonus_sessions
+    allowed_sessions = plan.max_sessions_per_month + bonus_sessions
+    if count >= allowed_sessions:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Monthly session limit reached for the '{plan.name}' plan "
-                f"({plan.max_sessions_per_month}/month). Upgrade to create more."
+                f"({allowed_sessions}/month). Upgrade to create more."
             ),
         )
 

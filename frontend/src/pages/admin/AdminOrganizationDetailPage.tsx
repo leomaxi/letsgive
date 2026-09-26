@@ -23,6 +23,9 @@ export default function AdminOrganizationDetailPage() {
   const [planStartsAt, setPlanStartsAt] = useState("");
   const [planExpiresAt, setPlanExpiresAt] = useState("");
   const [discountPercent, setDiscountPercent] = useState("");
+  const [bonusSessions, setBonusSessions] = useState("");
+  const [bonusExpiresOn, setBonusExpiresOn] = useState("");
+  const [bonusError, setBonusError] = useState<string | null>(null);
   const [refundReason, setRefundReason] = useState("");
   const [refundMessage, setRefundMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +58,23 @@ export default function AdminOrganizationDetailPage() {
     },
     onError: (err) =>
       setError(err instanceof ApiError ? err.message : "Could not update the subscription."),
+  });
+
+  const bonusMutation = useMutation({
+    mutationFn: () =>
+      adminApi.grantBonusSessions(
+        orgId!,
+        Number(bonusSessions),
+        new Date(`${bonusExpiresOn}T23:59:59`).toISOString()
+      ),
+    onSuccess: () => {
+      setBonusSessions("");
+      setBonusExpiresOn("");
+      setBonusError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
+    },
+    onError: (err) =>
+      setBonusError(err instanceof ApiError ? err.message : "Could not grant bonus sessions."),
   });
 
   const refundMutation = useMutation({
@@ -228,6 +248,69 @@ export default function AdminOrganizationDetailPage() {
             onClick={() => updateMutation.mutate()}
           >
             {updateMutation.isPending ? "Saving…" : "Apply changes"}
+          </Button>
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Bonus sessions
+        </h2>
+        {(() => {
+          const active =
+            org.bonus_sessions > 0 &&
+            org.bonus_sessions_expires_at !== null &&
+            new Date(org.bonus_sessions_expires_at).getTime() > Date.now();
+          return (
+            <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
+              {active
+                ? `${org.bonus_sessions} extra session${org.bonus_sessions === 1 ? "" : "s"} per month on top of the plan limit, until ${new Date(org.bonus_sessions_expires_at!).toLocaleDateString()}.`
+                : "No bonus sessions active."}
+            </p>
+          );
+        })()}
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Adds sessions on top of the plan's monthly limit. They must expire within the current
+          subscription period
+          {org.subscription_period_ends_at
+            ? ` (ends ${new Date(org.subscription_period_ends_at).toLocaleDateString()})`
+            : " — this organization has no paid period end yet, so bonus sessions can't be granted"}
+          . Granting again replaces the current grant; set 0 to remove it.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Extra sessions" htmlFor="bonusSessions">
+            <Input
+              id="bonusSessions"
+              type="number"
+              min={0}
+              max={10000}
+              value={bonusSessions}
+              onChange={(e) => setBonusSessions(e.target.value)}
+            />
+          </Field>
+          <Field label="Expires on" htmlFor="bonusExpiresOn">
+            <Input
+              id="bonusExpiresOn"
+              type="date"
+              max={org.subscription_period_ends_at?.slice(0, 10)}
+              value={bonusExpiresOn}
+              onChange={(e) => setBonusExpiresOn(e.target.value)}
+            />
+          </Field>
+        </div>
+        <ErrorText>{bonusError}</ErrorText>
+        <div className="mt-3">
+          <Button
+            disabled={
+              bonusSessions === "" ||
+              !Number.isInteger(Number(bonusSessions)) ||
+              Number(bonusSessions) < 0 ||
+              !bonusExpiresOn ||
+              bonusMutation.isPending
+            }
+            onClick={() => bonusMutation.mutate()}
+          >
+            {bonusMutation.isPending ? "Saving…" : "Grant bonus sessions"}
           </Button>
         </div>
       </Card>

@@ -64,11 +64,6 @@ class Settings(BaseSettings):
     paypal_webhook_id: str = ""
     paypal_return_url: str = "http://localhost:5173/billing?paypal=approved"
     paypal_cancel_url: str = "http://localhost:5173/billing?paypal=canceled"
-    # Optional comma-separated mapping for externally-created monthly PayPal
-    # plans, e.g. "growth:P-123,premium:P-456". Values here override the DB
-    # paypal_plan_id field so deployments can rotate plan ids without a code
-    # release.
-    paypal_plan_ids: str = ""
 
 
 @lru_cache

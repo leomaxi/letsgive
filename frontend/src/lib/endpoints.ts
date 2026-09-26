@@ -5,7 +5,10 @@ import type {
   AdminSupportTicket,
   AdminSupportTicketDetail,
   AuditLogEntry,
+  BillingInterval,
   BillingOverview,
+  BillingPricing,
+  BillingPromotion,
   BillingRefund,
   ContributionEvent,
   ContributionExportField,
@@ -123,11 +126,19 @@ export const plansApi = {
 export const billingApi = {
   overview: (orgId: string) => api.get<BillingOverview>(`/v1/organizations/${orgId}/billing`),
 
-  startPayPalSubscription: (orgId: string, planId: string) =>
+  pricing: (orgId: string) => api.get<BillingPricing>(`/v1/organizations/${orgId}/billing/pricing`),
+
+  startPayPalSubscription: (orgId: string, planId: string, interval: BillingInterval) =>
     api.post<StartPayPalSubscriptionResponse>(
       `/v1/organizations/${orgId}/billing/paypal-subscription`,
-      { plan_id: planId }
+      { plan_id: planId, interval }
     ),
+
+  revisePayPalSubscription: (orgId: string) =>
+    api.post<{ approval_url: string }>(`/v1/organizations/${orgId}/billing/paypal-subscription/revise`),
+
+  confirmPayPalRevision: (orgId: string) =>
+    api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/paypal-subscription/revise/confirm`),
 };
 
 export const notificationApi = {
@@ -429,6 +440,16 @@ export interface AdminSubscriptionUpdatePayload {
   discount_percent?: number;
 }
 
+export interface AdminPromotionCreatePayload {
+  name: string;
+  percent_off: number;
+  starts_at: string;
+  ends_at: string;
+  plan_id: string | null;
+  applies_to_existing: boolean;
+  applies_to_new: boolean;
+}
+
 export const adminApi = {
   listOrganizations: (limit = 50, offset = 0, search?: string) =>
     api.get<AdminOrganization[]>(
@@ -442,6 +463,33 @@ export const adminApi = {
 
   updateSubscription: (orgId: string, payload: AdminSubscriptionUpdatePayload) =>
     api.post<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}/subscription`, payload),
+
+  grantBonusSessions: (orgId: string, bonusSessions: number, expiresAt: string) =>
+    api.post<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}/bonus-sessions`, {
+      bonus_sessions: bonusSessions,
+      expires_at: expiresAt,
+    }),
+
+  updatePlanPrice: (planId: string, monthlyPriceCents: number, reason: string) =>
+    api.post<Plan>(`/v1/admin/plans/${planId}/pricing`, {
+      monthly_price_cents: monthlyPriceCents,
+      reason,
+    }),
+
+  listPromotions: () => api.get<BillingPromotion[]>("/v1/admin/promotions"),
+
+  createPromotion: (payload: AdminPromotionCreatePayload) =>
+    api.post<BillingPromotion>("/v1/admin/promotions", payload),
+
+  setPromotionActive: (promotionId: string, isActive: boolean) =>
+    api.patch<BillingPromotion>(`/v1/admin/promotions/${promotionId}`, { is_active: isActive }),
+
+  getBillingSettings: () => api.get<{ annual_savings_percent: number }>("/v1/admin/billing-settings"),
+
+  updateBillingSettings: (annualSavingsPercent: number) =>
+    api.post<{ annual_savings_percent: number }>("/v1/admin/billing-settings", {
+      annual_savings_percent: annualSavingsPercent,
+    }),
 
   processRefund: (orgId: string, reason: string) =>
     api.post<BillingRefund>(`/v1/admin/organizations/${orgId}/refund`, { reason }),

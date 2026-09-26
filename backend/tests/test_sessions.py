@@ -125,7 +125,10 @@ async def test_full_session_lifecycle(
         "contribution_count",
         "total_amount",
         "goal_reached",
+        "requires_watermark",
     }
+    # New orgs start on Starter, which requires the projection watermark.
+    assert public["requires_watermark"] is True
 
     resp = await client.post(
         f"/v1/sessions/{session['id']}/close",

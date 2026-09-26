@@ -38,6 +38,8 @@ export interface Organization {
   subscription_status: SubscriptionStatus;
   grace_period_ends_at: string | null;
   discount_percent: number;
+  bonus_sessions: number;
+  bonus_sessions_expires_at: string | null;
 }
 
 export interface MyOrganization extends Organization {
@@ -126,9 +128,53 @@ export interface BillingSubscription {
   status: string;
   currency: string;
   amount: string;
+  regular_amount: string | null;
+  promo_cycles: number;
+  interval: BillingInterval;
+  annual_savings_percent: number | null;
+  promotion_id: string | null;
   current_period_start: string | null;
   current_period_end: string | null;
   canceled_at: string | null;
+  created_at: string;
+}
+
+export type BillingInterval = "monthly" | "yearly";
+
+export interface PromotionSummary {
+  id: string;
+  name: string;
+  percent_off: number;
+  ends_at: string;
+}
+
+export interface PlanPriceQuote {
+  plan_id: string;
+  interval: BillingInterval;
+  undiscounted_amount: string;
+  regular_amount: string;
+  intro_amount: string;
+  intro_cycles: number;
+  savings_amount: string;
+  annual_savings_percent: number | null;
+  promotion: PromotionSummary | null;
+}
+
+export interface BillingPricing {
+  annual_savings_percent: number;
+  quotes: PlanPriceQuote[];
+}
+
+export interface BillingPromotion {
+  id: string;
+  name: string;
+  percent_off: number;
+  starts_at: string;
+  ends_at: string;
+  plan_id: string | null;
+  applies_to_existing: boolean;
+  applies_to_new: boolean;
+  is_active: boolean;
   created_at: string;
 }
 
@@ -166,6 +212,7 @@ export interface BillingOverview {
   refunds: BillingRefund[];
   refundable_amount: string;
   refundable_payment_id: string | null;
+  pricing_update: PlanPriceQuote | null;
 }
 
 export interface ApiErrorBody {
@@ -455,12 +502,15 @@ export interface AdminOrganization {
   plan_starts_at: string | null;
   plan_expires_at: string | null;
   discount_percent: number;
+  bonus_sessions: number;
+  bonus_sessions_expires_at: string | null;
   member_count: number;
   created_at: string;
 }
 
 export interface AdminOrganizationDetail extends AdminOrganization {
   grace_period_ends_at: string | null;
+  subscription_period_ends_at: string | null;
   connections_total: number;
   connections_connected: number;
 }

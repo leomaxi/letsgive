@@ -1,25 +1,36 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_platform_admin
 from app.api.v1.schemas import (
+    AdminAnnualSavingsUpdateRequest,
+    AdminBonusSessionsRequest,
     AdminOrganizationDetailOut,
     AdminOrganizationOut,
+    AdminPlanPricingUpdateRequest,
+    AdminPromotionCreateRequest,
+    AdminPromotionUpdateRequest,
     AdminRefundRequest,
     AdminSubscriptionUpdateRequest,
     AdminSupportTicketDetailOut,
     AdminSupportTicketOut,
     AuditLogOut,
+    BillingPromotionOut,
     BillingRefundOut,
+    BillingSettingsOut,
+    PlanOut,
     SupportTicketMessageCreateRequest,
     SupportTicketMessageOut,
     SupportTicketOut,
     SupportTicketStatusUpdateRequest,
 )
 from app.db.models.audit_log import AuditLog
+from app.db.models.billing import BillingPromotion, BillingSubscription
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
-from app.db.models.membership import Membership, MembershipStatus
+from app.db.models.membership import Membership, MembershipStatus, Role
 from app.db.models.notification import NotificationType
 from app.db.models.organization import Organization
 from app.db.models.plan import Plan
@@ -29,7 +40,9 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.inbox import notify_user
+from app.domain.notifications import Notifier, get_notifier
 from app.domain.subscriptions import create_prorated_refund
+from app.domain.subscriptions import get_billing_settings as load_billing_settings
 from app.integrations.paypal import PayPalClient, get_paypal_client
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -37,6 +50,64 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+async def _notify_owners_on_plan_price_change(
+    db: AsyncSession,
+    *,
+    plan: Plan,
+    old_price_cents: int,
+    reason: str,
+    notifier: Notifier,
+) -> int:
+    rows = await db.execute(
+        select(Organization, User)
+        .join(Membership, Membership.organization_id == Organization.id)
+        .join(User, User.id == Membership.user_id)
+        .where(
+            Organization.plan_id == plan.id,
+            Membership.role == Role.OWNER,
+            Membership.status == MembershipStatus.ACTIVE,
+        )
+    )
+    notified = 0
+    old_price = old_price_cents / 100
+    new_price = plan.monthly_price_cents / 100
+    for org, owner in rows.all():
+        body = (
+            f"The monthly subscription price for {plan.name} changed from "
+            f"USD {old_price:.2f} to USD {new_price:.2f}. Yearly billing keeps its "
+            f"annual discount on top of the new price.\n\nReason: {reason}\n\n"
+            "If you pay through PayPal, your current price stays in place until you "
+            "approve the new pricing from the Billing page in Let's Give."
+        )
+        await notify_user(
+            db,
+            user_id=owner.id,
+            organization_id=org.id,
+            type=NotificationType.BILLING_NOTICE,
+            title=f"{plan.name} subscription price changed",
+            body=body[:1000],
+        )
+        await notifier.send_billing_notice(
+            to_email=owner.email,
+            subject=f"Let's Give: {plan.name} subscription price changed",
+            body=body,
+        )
+        notified += 1
+    return notified
+
+
+async def _subscription_period_end(db: AsyncSession, org: Organization) -> datetime | None:
+    result = await db.execute(
+        select(BillingSubscription)
+        .where(BillingSubscription.organization_id == org.id)
+        .order_by(BillingSubscription.created_at.desc())
+    )
+    subscription = result.scalars().first()
+    if subscription is not None and subscription.current_period_end is not None:
+        return subscription.current_period_end
+    return org.plan_expires_at
 
 
 @router.get("/organizations", response_model=list[AdminOrganizationOut])
@@ -85,6 +156,8 @@ async def list_organizations(
             plan_starts_at=org.plan_starts_at,
             plan_expires_at=org.plan_expires_at,
             discount_percent=org.discount_percent,
+            bonus_sessions=org.bonus_sessions,
+            bonus_sessions_expires_at=org.bonus_sessions_expires_at,
             member_count=member_count or 0,
             created_at=org.created_at,
         )
@@ -132,9 +205,12 @@ async def get_organization(
         plan_starts_at=org.plan_starts_at,
         plan_expires_at=org.plan_expires_at,
         discount_percent=org.discount_percent,
+        bonus_sessions=org.bonus_sessions,
+        bonus_sessions_expires_at=org.bonus_sessions_expires_at,
         member_count=member_count_result.scalar_one(),
         created_at=org.created_at,
         grace_period_ends_at=org.grace_period_ends_at,
+        subscription_period_ends_at=await _subscription_period_end(db, org),
         connections_total=connections_total_result.scalar_one(),
         connections_connected=connections_connected_result.scalar_one(),
     )
@@ -202,6 +278,195 @@ async def update_subscription(
     )
     await db.commit()
     return await get_organization(organization_id, admin=admin, db=db)
+
+
+@router.post("/organizations/{organization_id}/bonus-sessions", response_model=AdminOrganizationDetailOut)
+async def grant_bonus_sessions(
+    organization_id: str,
+    payload: AdminBonusSessionsRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminOrganizationDetailOut:
+    org = await db.get(Organization, organization_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+
+    period_end = await _subscription_period_end(db, org)
+    if period_end is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bonus sessions require an existing subscription period end date.",
+        )
+    if payload.expires_at > period_end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bonus sessions must expire within the existing subscription period.",
+        )
+
+    before = {
+        "bonus_sessions": org.bonus_sessions,
+        "bonus_sessions_expires_at": org.bonus_sessions_expires_at.isoformat()
+        if org.bonus_sessions_expires_at
+        else None,
+    }
+    org.bonus_sessions = payload.bonus_sessions
+    org.bonus_sessions_expires_at = payload.expires_at
+
+    await record_audit_event(
+        db,
+        action="platform_admin.bonus_sessions_changed",
+        target_type="organization",
+        target_id=org.id,
+        organization_id=org.id,
+        actor_user_id=admin.id,
+        before=before,
+        after={
+            "bonus_sessions": org.bonus_sessions,
+            "bonus_sessions_expires_at": org.bonus_sessions_expires_at.isoformat(),
+        },
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    return await get_organization(organization_id, admin=admin, db=db)
+
+
+@router.post("/plans/{plan_id}/pricing", response_model=PlanOut)
+async def update_plan_pricing(
+    plan_id: str,
+    payload: AdminPlanPricingUpdateRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+    notifier: Notifier = Depends(get_notifier),
+) -> Plan:
+    plan = await db.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found.")
+
+    before_price = plan.monthly_price_cents
+    plan.monthly_price_cents = payload.monthly_price_cents
+    notified = await _notify_owners_on_plan_price_change(
+        db,
+        plan=plan,
+        old_price_cents=before_price,
+        reason=payload.reason,
+        notifier=notifier,
+    )
+    await record_audit_event(
+        db,
+        action="platform_admin.plan_price_changed",
+        target_type="plan",
+        target_id=plan.id,
+        actor_user_id=admin.id,
+        before={"monthly_price_cents": before_price},
+        after={
+            "monthly_price_cents": plan.monthly_price_cents,
+            "reason": payload.reason,
+            "owners_notified": notified,
+        },
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+@router.get("/promotions", response_model=list[BillingPromotionOut])
+async def list_promotions(
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[BillingPromotion]:
+    result = await db.execute(select(BillingPromotion).order_by(BillingPromotion.created_at.desc()))
+    return list(result.scalars().all())
+
+
+@router.post("/promotions", response_model=BillingPromotionOut, status_code=status.HTTP_201_CREATED)
+async def create_promotion(
+    payload: AdminPromotionCreateRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BillingPromotion:
+    if payload.plan_id is not None and await db.get(Plan, payload.plan_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found.")
+    promotion = BillingPromotion(**payload.model_dump())
+    db.add(promotion)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="platform_admin.promotion_created",
+        target_type="billing_promotion",
+        target_id=promotion.id,
+        actor_user_id=admin.id,
+        after=payload.model_dump(mode="json"),
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    await db.refresh(promotion)
+    return promotion
+
+
+@router.patch("/promotions/{promotion_id}", response_model=BillingPromotionOut)
+async def update_promotion(
+    promotion_id: str,
+    payload: AdminPromotionUpdateRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BillingPromotion:
+    promotion = await db.get(BillingPromotion, promotion_id)
+    if promotion is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Promotion not found.")
+    before = {"is_active": promotion.is_active}
+    promotion.is_active = payload.is_active
+    await record_audit_event(
+        db,
+        action="platform_admin.promotion_updated",
+        target_type="billing_promotion",
+        target_id=promotion.id,
+        actor_user_id=admin.id,
+        before=before,
+        after={"is_active": promotion.is_active},
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    await db.refresh(promotion)
+    return promotion
+
+
+@router.get("/billing-settings", response_model=BillingSettingsOut)
+async def get_billing_settings(
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BillingSettingsOut:
+    settings = await load_billing_settings(db)
+    await db.commit()
+    return BillingSettingsOut(annual_savings_percent=settings.annual_savings_percent)
+
+
+@router.post("/billing-settings", response_model=BillingSettingsOut)
+async def update_billing_settings(
+    payload: AdminAnnualSavingsUpdateRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BillingSettingsOut:
+    settings = await load_billing_settings(db)
+    before = settings.annual_savings_percent
+    settings.annual_savings_percent = payload.annual_savings_percent
+    await record_audit_event(
+        db,
+        action="platform_admin.annual_savings_changed",
+        target_type="billing_settings",
+        target_id=settings.id,
+        actor_user_id=admin.id,
+        before={"annual_savings_percent": before},
+        after={"annual_savings_percent": settings.annual_savings_percent},
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    return BillingSettingsOut(annual_savings_percent=settings.annual_savings_percent)
 
 
 @router.post("/organizations/{organization_id}/refund", response_model=BillingRefundOut)

@@ -78,5 +78,10 @@ class Plan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     allows_sso: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     monthly_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     paypal_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Auto-provisioned PayPal billing plans (intro cycle + regular cycle, see
+    # app/domain/subscriptions.py::ensure_paypal_plan_id). Created on first
+    # checkout for each interval so admins never have to map plans by hand.
+    paypal_monthly_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    paypal_yearly_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     max_exports_per_month: Mapped[int | None] = mapped_column(Integer)
     max_session_mailbox_connections: Mapped[int | None] = mapped_column(Integer, default=1)

@@ -1,10 +1,13 @@
 from app.db.models.approval import MAX_APPROVAL_ATTEMPTS, Approval
 from app.db.models.audit_log import AuditLog
 from app.db.models.billing import (
+    BillingInterval,
     BillingPayment,
     BillingPaymentStatus,
+    BillingPromotion,
     BillingRefund,
     BillingRefundStatus,
+    BillingSettings,
     BillingSubscription,
     BillingSubscriptionStatus,
 )
@@ -37,8 +40,11 @@ __all__ = [
     "AuditLog",
     "BillingPayment",
     "BillingPaymentStatus",
+    "BillingInterval",
+    "BillingPromotion",
     "BillingRefund",
     "BillingRefundStatus",
+    "BillingSettings",
     "BillingSubscription",
     "BillingSubscriptionStatus",
     "ContributionDecision",

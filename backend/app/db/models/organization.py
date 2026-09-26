@@ -63,6 +63,8 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # plan once this passes, unless a platform admin renews/changes it first.
     plan_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     discount_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bonus_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bonus_sessions_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         SAEnum(

@@ -255,8 +255,10 @@ async def test_public_display_template_endpoint(client: AsyncClient, db_session:
     fetched = resp.json()
     assert fetched["id"] == template["id"]
     assert fetched["name"] == "Sunday"
-    assert len(fetched["elements"]) == 1
-    assert fetched["elements"][0]["binding"]["text"] == "Welcome"
+    # Starter plan: the required "Powered by LetsGive.ca" watermark is
+    # appended to the template's own elements.
+    assert [e["binding"]["text"] for e in fetched["elements"]] == ["Welcome", "Powered by LetsGive.ca"]
+    assert fetched["elements"][1]["id"] == "letsgive-required-watermark"
 
     # No token at all -> unauthorized, same as the WS channel and .../public.
     resp = await client.get(f"/v1/sessions/{session['id']}/display-template/public")

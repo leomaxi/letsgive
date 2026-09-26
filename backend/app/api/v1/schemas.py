@@ -10,6 +10,7 @@ from app.db.models.mailbox_connection import ConnectionStatus, MailboxProviderNa
 from app.db.models.membership import MembershipStatus, Role
 from app.db.models.notification import NotificationType
 from app.db.models.organization import SubscriptionStatus
+from app.db.models.billing import BillingInterval
 from app.db.models.reconciliation_item import ReconciliationResolution, ReconciliationStatus
 from app.db.models.session import SessionStatus
 from app.db.models.support_ticket import SupportTicketStatus
@@ -92,6 +93,8 @@ class OrganizationOut(BaseModel):
     subscription_status: SubscriptionStatus
     grace_period_ends_at: datetime | None
     discount_percent: int
+    bonus_sessions: int
+    bonus_sessions_expires_at: datetime | None
 
     model_config = {"from_attributes": True}
 
@@ -122,6 +125,7 @@ class SwitchPlanRequest(BaseModel):
 
 class StartPayPalSubscriptionRequest(BaseModel):
     plan_id: str
+    interval: BillingInterval = BillingInterval.MONTHLY
 
 
 class StartPayPalSubscriptionResponse(BaseModel):
@@ -138,6 +142,11 @@ class BillingSubscriptionOut(BaseModel):
     status: str
     currency: str
     amount: Decimal
+    regular_amount: Decimal | None
+    promo_cycles: int
+    interval: BillingInterval
+    annual_savings_percent: int | None
+    promotion_id: str | None
     current_period_start: datetime | None
     current_period_end: datetime | None
     canceled_at: datetime | None
@@ -178,16 +187,106 @@ class BillingRefundOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PromotionSummaryOut(BaseModel):
+    id: str
+    name: str
+    percent_off: int
+    ends_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PlanPriceQuoteOut(BaseModel):
+    plan_id: str
+    interval: BillingInterval
+    # Cost of the same period billed monthly at list price (12x for yearly).
+    undiscounted_amount: Decimal
+    # Charged per cycle once any promotional cycles are used up.
+    regular_amount: Decimal
+    # Charged for each of the first intro_cycles payments (promotion).
+    intro_amount: Decimal
+    intro_cycles: int
+    savings_amount: Decimal
+    annual_savings_percent: int | None
+    promotion: PromotionSummaryOut | None
+
+
+class BillingPricingOut(BaseModel):
+    annual_savings_percent: int
+    quotes: list[PlanPriceQuoteOut]
+
+
 class BillingOverviewOut(BaseModel):
     subscription: BillingSubscriptionOut | None
     payments: list[BillingPaymentOut]
     refunds: list[BillingRefundOut]
     refundable_amount: Decimal
     refundable_payment_id: str | None
+    # Set when the active subscription's PayPal pricing no longer matches
+    # current pricing (admin price change, new promotion, annual savings
+    # change); the owner approves it via the revise endpoint.
+    pricing_update: PlanPriceQuoteOut | None = None
+
+
+class RevisePayPalSubscriptionResponse(BaseModel):
+    approval_url: str
 
 
 class AdminRefundRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
+
+
+class AdminBonusSessionsRequest(BaseModel):
+    bonus_sessions: int = Field(ge=0, le=10000)
+    expires_at: datetime
+
+
+class AdminPromotionUpdateRequest(BaseModel):
+    is_active: bool
+
+
+class AdminPlanPricingUpdateRequest(BaseModel):
+    monthly_price_cents: int = Field(ge=0)
+    reason: str = Field(min_length=3, max_length=2000)
+
+
+class AdminPromotionCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=150)
+    percent_off: int = Field(ge=1, le=100)
+    starts_at: datetime
+    ends_at: datetime
+    plan_id: str | None = None
+    applies_to_existing: bool = True
+    applies_to_new: bool = True
+
+    @model_validator(mode="after")
+    def _dates_make_sense(self) -> "AdminPromotionCreateRequest":
+        if self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be after starts_at.")
+        return self
+
+
+class BillingPromotionOut(BaseModel):
+    id: str
+    name: str
+    percent_off: int
+    starts_at: datetime
+    ends_at: datetime
+    plan_id: str | None
+    applies_to_existing: bool
+    applies_to_new: bool
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AdminAnnualSavingsUpdateRequest(BaseModel):
+    annual_savings_percent: int = Field(ge=0, le=100)
+
+
+class BillingSettingsOut(BaseModel):
+    annual_savings_percent: int
 
 
 class MemberInviteRequest(BaseModel):
@@ -693,12 +792,17 @@ class AdminOrganizationOut(BaseModel):
     plan_starts_at: datetime | None
     plan_expires_at: datetime | None
     discount_percent: int
+    bonus_sessions: int
+    bonus_sessions_expires_at: datetime | None
     member_count: int
     created_at: datetime
 
 
 class AdminOrganizationDetailOut(AdminOrganizationOut):
     grace_period_ends_at: datetime | None
+    # Latest bonus-session expiry allowed: the PayPal period end, or the
+    # admin-granted plan_expires_at when there is no PayPal subscription.
+    subscription_period_ends_at: datetime | None
     connections_total: int
     connections_connected: int
 

@@ -22,6 +22,7 @@ MXROUTE_SMTP_HOST = "tuesday.mxrouting.net"
 class Notifier(Protocol):
     async def send_otp(self, *, to_email: str, code: str, session_id: str) -> None: ...
     async def send_password_reset(self, *, to_email: str, reset_url: str) -> None: ...
+    async def send_billing_notice(self, *, to_email: str, subject: str, body: str) -> None: ...
 
 
 class LoggingNotifier:
@@ -37,6 +38,9 @@ class LoggingNotifier:
 
     async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
         logger.info("Password reset link sent to %s: %s", to_email, reset_url)
+
+    async def send_billing_notice(self, *, to_email: str, subject: str, body: str) -> None:
+        logger.info("Billing notice sent to %s: %s\n%s", to_email, subject, body)
 
 
 class SmtpNotifier:
@@ -87,6 +91,14 @@ class SmtpNotifier:
             to_email=to_email,
             subject="Let's Give: reset your password",
             body=message,
+        )
+
+    async def send_billing_notice(self, *, to_email: str, subject: str, body: str) -> None:
+        await asyncio.to_thread(
+            self._send_sync,
+            to_email=to_email,
+            subject=subject,
+            body=body,
         )
 
     def _send_sync(self, *, to_email: str, subject: str, body: str) -> None:

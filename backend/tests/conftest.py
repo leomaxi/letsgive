@@ -29,6 +29,9 @@ class CapturingNotifier:
     async def send_password_reset(self, *, to_email: str, reset_url: str) -> None:
         self.sent.append({"to_email": to_email, "reset_url": reset_url})
 
+    async def send_billing_notice(self, *, to_email: str, subject: str, body: str) -> None:
+        self.sent.append({"to_email": to_email, "subject": subject, "body": body})
+
     def latest_code_for(self, session_id: str) -> str:
         for entry in reversed(self.sent):
             if entry["session_id"] == session_id:
