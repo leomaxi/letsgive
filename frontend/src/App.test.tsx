@@ -49,6 +49,7 @@ function makeOrg(overrides: Partial<MyOrganization> = {}): MyOrganization {
     plan_id: "plan1",
     subscription_status: "trialing",
     grace_period_ends_at: null,
+    discount_percent: 0,
     role: "owner",
     membership_status: "active",
     ...overrides,

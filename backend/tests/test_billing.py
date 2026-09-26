@@ -1,18 +1,42 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.billing import (
+    BillingPayment,
+    BillingPaymentStatus,
+    BillingSubscription,
+    BillingSubscriptionStatus,
+)
 from app.db.models.organization import Organization
+from app.db.models.plan import Plan
+from app.db.models.session_mailbox_connection import SessionMailboxConnection
+from app.integrations.paypal import get_paypal_client
+from app.main import app
 from tests.helpers import (
     add_active_member,
     create_fake_connection,
     create_org,
     create_session,
     enable_mfa,
+    make_platform_admin,
     register_and_login,
 )
+
+
+class FakePayPalClient:
+    def __init__(self) -> None:
+        self.refunds: list[dict] = []
+
+    async def refund_capture(self, **kwargs):
+        self.refunds.append(kwargs)
+        return {"id": "R-TEST", "status": "COMPLETED"}
+
+    async def cancel_subscription(self, provider_subscription_id: str, reason: str) -> None:
+        return None
 
 
 async def test_new_org_defaults_to_starter_plan(client: AsyncClient, db_session: AsyncSession):
@@ -40,8 +64,8 @@ async def test_session_quota_enforced_for_starter_plan(client: AsyncClient, db_s
         client, db_session, owner_token, org["id"], "media-quota@example.org", "media"
     )
 
-    # Starter plan allows 4 sessions/month.
-    for _ in range(4):
+    # Starter plan allows 2 sessions/month.
+    for _ in range(2):
         await create_session(client, media_token, org["id"])
 
     resp = await client.post(
@@ -385,3 +409,180 @@ async def test_reports_stay_readable_within_grace_period_but_not_after(
     assert resp.status_code == 200, resp.text
     resp = await client.get(f"/v1/sessions/{session['id']}/events", headers=headers)
     assert resp.status_code == 200, resp.text
+
+
+async def test_admin_refund_requires_reason(client: AsyncClient, db_session: AsyncSession):
+    admin_token = await register_and_login(client, "admin-refund-reason@example.org")
+    user_result = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {admin_token}"})
+    await make_platform_admin(db_session, user_result.json()["id"])
+
+    resp = await client.post(
+        "/v1/admin/organizations/not-real/refund",
+        json={"reason": ""},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_admin_processes_prorated_paypal_refund(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-refund@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Refund Org")
+
+    admin_token = await register_and_login(client, "admin-refund@example.org")
+    admin_resp = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {admin_token}"})
+    await make_platform_admin(db_session, admin_resp.json()["id"])
+
+    plan_result = await db_session.execute(select(Plan).where(Plan.key == "growth"))
+    plan = plan_result.scalar_one()
+    subscription = BillingSubscription(
+        organization_id=org["id"],
+        plan_id=plan.id,
+        provider_subscription_id="I-TEST",
+        status=BillingSubscriptionStatus.ACTIVE,
+        currency="CAD",
+        amount=Decimal("29.00"),
+    )
+    db_session.add(subscription)
+    await db_session.flush()
+    now = datetime.now(timezone.utc)
+    payment = BillingPayment(
+        organization_id=org["id"],
+        billing_subscription_id=subscription.id,
+        provider_payment_id="SALE-TEST",
+        provider_capture_id="CAPTURE-TEST",
+        amount=Decimal("30.00"),
+        currency="CAD",
+        status=BillingPaymentStatus.COMPLETED,
+        period_start=now - timedelta(days=10),
+        period_end=now + timedelta(days=20),
+    )
+    db_session.add(payment)
+    await db_session.commit()
+
+    fake_paypal = FakePayPalClient()
+    app.dependency_overrides[get_paypal_client] = lambda: fake_paypal
+    resp = await client.post(
+        f"/v1/admin/organizations/{org['id']}/refund",
+        json={"reason": "Customer canceled mid-cycle."},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    app.dependency_overrides.pop(get_paypal_client, None)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["provider_refund_id"] == "R-TEST"
+    assert body["status"] == "completed"
+    assert Decimal(body["amount"]) == Decimal("20.00")
+    assert fake_paypal.refunds[0]["capture_id"] == "CAPTURE-TEST"
+    assert fake_paypal.refunds[0]["amount"] == Decimal("20.00")
+
+
+async def test_starter_plan_cannot_export_transactions(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner_token = await register_and_login(client, "owner-noexport@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "No Export Org")
+    connection = await create_fake_connection(client, owner_token, org["id"])
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export.csv",
+        params={
+            "connection_id": connection["id"],
+            "from_datetime": datetime.now(timezone.utc).isoformat(),
+            "to_datetime": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+        },
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 402, resp.text
+
+
+async def test_growth_export_quota_is_three_per_month(client: AsyncClient, db_session: AsyncSession):
+    owner_token = await register_and_login(client, "owner-exportquota@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Export Quota Org")
+    plan_result = await db_session.execute(select(Plan).where(Plan.key == "growth"))
+    org_result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
+    org_row = org_result.scalar_one()
+    org_row.plan_id = plan_result.scalar_one().id
+    await db_session.commit()
+    connection = await create_fake_connection(client, owner_token, org["id"])
+    params = {
+        "connection_id": connection["id"],
+        "from_datetime": datetime.now(timezone.utc).isoformat(),
+        "to_datetime": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+    }
+
+    for _ in range(3):
+        resp = await client.get(
+            f"/v1/organizations/{org['id']}/contribution-export.csv",
+            params=params,
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        f"/v1/organizations/{org['id']}/contribution-export.csv",
+        params=params,
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 402, resp.text
+
+
+async def test_premium_allows_two_mailboxes_per_session(client: AsyncClient, db_session: AsyncSession):
+    owner_token = await register_and_login(client, "owner-twomail@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "Two Mail Org")
+    plan_result = await db_session.execute(select(Plan).where(Plan.key == "premium"))
+    org_result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
+    org_row = org_result.scalar_one()
+    org_row.plan_id = plan_result.scalar_one().id
+    await db_session.commit()
+    first = await create_fake_connection(client, owner_token, org["id"], mailbox="one@example.org")
+    second = await create_fake_connection(client, owner_token, org["id"], mailbox="two@example.org")
+
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "organization_id": org["id"],
+            "contribution_method": "e-transfer",
+            "duration_seconds": 600,
+            "mailbox_connection_ids": [first["id"], second["id"]],
+        },
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert set(resp.json()["mailbox_connection_ids"]) == {first["id"], second["id"]}
+
+    rows = await db_session.execute(
+        select(SessionMailboxConnection).where(SessionMailboxConnection.session_id == resp.json()["id"])
+    )
+    assert len(rows.scalars().all()) == 2
+
+
+async def test_growth_blocks_two_mailboxes_per_session(client: AsyncClient, db_session: AsyncSession):
+    owner_token = await register_and_login(client, "owner-onemail@example.org")
+    await enable_mfa(client, owner_token)
+    org = await create_org(client, owner_token, "One Mail Org")
+    plan_result = await db_session.execute(select(Plan).where(Plan.key == "growth"))
+    org_result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
+    org_row = org_result.scalar_one()
+    org_row.plan_id = plan_result.scalar_one().id
+    await db_session.commit()
+    first = await create_fake_connection(client, owner_token, org["id"], mailbox="one@example.org")
+    second = await create_fake_connection(client, owner_token, org["id"], mailbox="two@example.org")
+
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "organization_id": org["id"],
+            "contribution_method": "e-transfer",
+            "duration_seconds": 600,
+            "mailbox_connection_ids": [first["id"], second["id"]],
+        },
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert resp.status_code == 402, resp.text

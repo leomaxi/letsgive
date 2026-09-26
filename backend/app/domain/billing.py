@@ -5,11 +5,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.display_template import DisplayTemplate
+from app.db.models.export_usage import ExportUsage
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
 from app.db.models.membership import Membership, MembershipStatus
 from app.db.models.organization import Organization, SubscriptionStatus
 from app.db.models.plan import Plan
 from app.db.models.session import Session
+
+WATERMARK_TEXT = "Powered by LetsGive.ca"
 
 CANCELED_DETAIL = (
     "This organization's subscription is canceled. Historical reports remain "
@@ -152,3 +155,65 @@ async def assert_can_add_team_member(db: AsyncSession, org: Organization) -> Non
                 f"({plan.max_team_members} seats). Upgrade to invite more teammates."
             ),
         )
+
+
+async def get_org_plan(db: AsyncSession, org: Organization) -> Plan | None:
+    if org.plan_id is None:
+        return None
+    return await db.get(Plan, org.plan_id)
+
+
+async def plan_requires_watermark(db: AsyncSession, org: Organization) -> bool:
+    plan = await get_org_plan(db, org)
+    return plan is None or plan.key == "starter"
+
+
+async def assert_session_mailbox_limit(
+    db: AsyncSession, org: Organization, mailbox_connection_ids: list[str]
+) -> None:
+    plan = await get_org_plan(db, org)
+    if plan is None or plan.max_session_mailbox_connections is None:
+        return
+    if len(mailbox_connection_ids) > plan.max_session_mailbox_connections:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"The '{plan.name}' plan allows {plan.max_session_mailbox_connections} "
+                "connected mailbox per session. Upgrade to monitor multiple emails in one session."
+            ),
+        )
+
+
+async def consume_export_quota(db: AsyncSession, org: Organization) -> tuple[int, int | None]:
+    plan = await get_org_plan(db, org)
+    if plan is None or plan.max_exports_per_month == 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Your current plan does not include transaction exports. Upgrade to export records.",
+        )
+    if plan.max_exports_per_month is None:
+        return 0, None
+
+    now = datetime.now(timezone.utc)
+    month = now.strftime("%Y-%m")
+    result = await db.execute(
+        select(ExportUsage).where(
+            ExportUsage.organization_id == org.id,
+            ExportUsage.month == month,
+        )
+    )
+    usage = result.scalar_one_or_none()
+    if usage is None:
+        usage = ExportUsage(organization_id=org.id, month=month, count=0)
+        db.add(usage)
+        await db.flush()
+    if usage.count >= plan.max_exports_per_month:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Monthly export limit reached for the '{plan.name}' plan "
+                f"({plan.max_exports_per_month}/month). Upgrade or wait until next month."
+            ),
+        )
+    usage.count += 1
+    return usage.count, plan.max_exports_per_month

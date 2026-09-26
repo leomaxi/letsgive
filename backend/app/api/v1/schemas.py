@@ -91,6 +91,7 @@ class OrganizationOut(BaseModel):
     plan_id: str | None
     subscription_status: SubscriptionStatus
     grace_period_ends_at: datetime | None
+    discount_percent: int
 
     model_config = {"from_attributes": True}
 
@@ -117,6 +118,76 @@ class MyOrganizationOut(OrganizationOut):
 
 class SwitchPlanRequest(BaseModel):
     plan_id: str
+
+
+class StartPayPalSubscriptionRequest(BaseModel):
+    plan_id: str
+
+
+class StartPayPalSubscriptionResponse(BaseModel):
+    billing_subscription_id: str
+    paypal_subscription_id: str
+    approval_url: str
+
+
+class BillingSubscriptionOut(BaseModel):
+    id: str
+    organization_id: str
+    plan_id: str
+    provider_subscription_id: str
+    status: str
+    currency: str
+    amount: Decimal
+    current_period_start: datetime | None
+    current_period_end: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BillingPaymentOut(BaseModel):
+    id: str
+    organization_id: str
+    billing_subscription_id: str | None
+    provider_payment_id: str
+    provider_capture_id: str | None
+    amount: Decimal
+    currency: str
+    status: str
+    period_start: datetime | None
+    period_end: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BillingRefundOut(BaseModel):
+    id: str
+    organization_id: str
+    billing_payment_id: str
+    requested_by_user_id: str
+    provider_refund_id: str | None
+    amount: Decimal
+    currency: str
+    reason: str
+    status: str
+    processed_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BillingOverviewOut(BaseModel):
+    subscription: BillingSubscriptionOut | None
+    payments: list[BillingPaymentOut]
+    refunds: list[BillingRefundOut]
+    refundable_amount: Decimal
+    refundable_payment_id: str | None
+
+
+class AdminRefundRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=1000)
 
 
 class MemberInviteRequest(BaseModel):
@@ -215,12 +286,14 @@ class SessionCreateRequest(BaseModel):
     goal_amount: Decimal | None = Field(default=None, ge=0)
     test_mode: bool = False
     mailbox_connection_id: str | None = None
+    mailbox_connection_ids: list[str] | None = None
 
 
 class SessionOperatorOut(BaseModel):
     id: str
     organization_id: str
     mailbox_connection_id: str | None
+    mailbox_connection_ids: list[str] = Field(default_factory=list)
     display_template_id: str | None
     status: SessionStatus
     version: int
@@ -258,6 +331,7 @@ class SessionPublicOut(BaseModel):
     # projection page even when the org has chosen to keep the exact amount
     # private. See app/api/v1/sessions.py::_public_payload.
     goal_reached: bool = False
+    requires_watermark: bool = False
 
 
 class RequestApprovalResponse(BaseModel):
@@ -533,6 +607,10 @@ class PlanOut(BaseModel):
     max_team_members: int
     allows_custom_subdomain: bool
     allows_sso: bool
+    monthly_price_cents: int
+    paypal_plan_id: str | None
+    max_exports_per_month: int | None
+    max_session_mailbox_connections: int | None
 
     model_config = {"from_attributes": True}
 
@@ -614,6 +692,7 @@ class AdminOrganizationOut(BaseModel):
     subscription_status: SubscriptionStatus
     plan_starts_at: datetime | None
     plan_expires_at: datetime | None
+    discount_percent: int
     member_count: int
     created_at: datetime
 
@@ -634,6 +713,7 @@ class AdminSubscriptionUpdateRequest(BaseModel):
     # plan_id/subscription_status without this leaves the grant open-ended,
     # same as before this feature existed.
     plan_expires_at: datetime | None = None
+    discount_percent: int | None = Field(default=None, ge=0, le=100)
 
     @model_validator(mode="after")
     def _require_at_least_one_field(self) -> "AdminSubscriptionUpdateRequest":
@@ -646,10 +726,11 @@ class AdminSubscriptionUpdateRequest(BaseModel):
             and self.subscription_status is None
             and self.plan_starts_at is None
             and self.plan_expires_at is None
+            and self.discount_percent is None
         ):
             raise ValueError(
                 "Provide at least one of plan_id, subscription_status, plan_starts_at, "
-                "or plan_expires_at."
+                "plan_expires_at, or discount_percent."
             )
         return self
 

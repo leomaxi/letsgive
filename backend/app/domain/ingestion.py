@@ -13,6 +13,7 @@ from app.db.models.mailbox_connection import MailboxConnection
 from app.db.models.parser_profile import ParserProfile
 from app.db.models.reconciliation_item import ReconciliationItem, ReconciliationStatus
 from app.db.models.session import Session, SessionStatus
+from app.db.models.session_mailbox_connection import SessionMailboxConnection
 from app.domain.mailbox_providers import RawMessage
 from app.domain.parsing import parse_message
 
@@ -113,7 +114,20 @@ async def _find_target_session(
             | (Session.mailbox_connection_id == connection.id),
         )
     )
-    candidates = list(result.scalars().all())
+    candidates_by_id = {session.id: session for session in result.scalars().all()}
+    linked_result = await db.execute(
+        select(Session)
+        .join(SessionMailboxConnection, SessionMailboxConnection.session_id == Session.id)
+        .where(
+            Session.organization_id == connection.organization_id,
+            Session.status.in_(ELIGIBLE_SESSION_STATUSES),
+            Session.watermark.is_not(None),
+            SessionMailboxConnection.mailbox_connection_id == connection.id,
+        )
+    )
+    for session in linked_result.scalars().all():
+        candidates_by_id[session.id] = session
+    candidates = list(candidates_by_id.values())
     if not candidates:
         return None, False
 

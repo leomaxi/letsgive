@@ -9,6 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.contribution_event import ContributionEvent
+from app.db.models.organization import Organization
+from app.db.models.plan import Plan
 
 from tests.conftest import CapturingNotifier
 from tests.helpers import (
@@ -22,6 +24,15 @@ from tests.helpers import (
     enable_mfa,
     register_and_login,
 )
+
+
+async def _set_org_plan(db_session: AsyncSession, org_id: str, plan_key: str) -> None:
+    plan_result = await db_session.execute(select(Plan).where(Plan.key == plan_key))
+    plan = plan_result.scalar_one()
+    org_result = await db_session.execute(select(Organization).where(Organization.id == org_id))
+    org = org_result.scalar_one()
+    org.plan_id = plan.id
+    await db_session.commit()
 
 
 def _raw_received_money_email(
@@ -176,6 +187,7 @@ async def test_owner_can_export_contributions_for_period_with_keywords_and_templ
     owner_token = await register_and_login(client, "owner-export@example.org")
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, "Export Org")
+    await _set_org_plan(db_session, org["id"], "growth")
     finance_token = await add_active_member(
         client, db_session, owner_token, org["id"], "finance-export@example.org", "finance", needs_mfa=True
     )
@@ -281,6 +293,7 @@ async def test_received_money_export_uses_interac_sent_from_as_sender_name(
     owner_token = await register_and_login(client, "owner-interac-export@example.org")
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, "Interac Export Org")
+    await _set_org_plan(db_session, org["id"], "growth")
     finance_token = await add_active_member(
         client,
         db_session,
@@ -363,6 +376,7 @@ async def test_imap_export_reads_mailbox_date_range_without_sessions(
     owner_token = await register_and_login(client, "owner-mailbox-export@example.org")
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, "Mailbox Export Org")
+    await _set_org_plan(db_session, org["id"], "growth")
     finance_token = await add_active_member(
         client,
         db_session,

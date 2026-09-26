@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -26,7 +26,7 @@ from app.db.models.parser_profile import ParserProfile
 from app.db.models.reconciliation_item import ReconciliationItem, ReconciliationStatus
 from app.db.models.session import Session
 from app.db.session import get_db
-from app.domain.billing import assert_reports_readable
+from app.domain.billing import assert_reports_readable, consume_export_quota
 from app.domain.audit import record_audit_event
 from app.domain.imap_polling import (
     fetch_imap_message_by_message_id,
@@ -61,18 +61,15 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _export_timezone(timezone_name: str) -> ZoneInfo:
+def _export_timezone(timezone_name: str) -> tzinfo:
     try:
         return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unknown export timezone.",
-        ) from exc
+    except ZoneInfoNotFoundError:
+        return timezone.utc
 
 
 def _as_export_range(
-    from_datetime: datetime, to_datetime: datetime, export_tz: ZoneInfo
+    from_datetime: datetime, to_datetime: datetime, export_tz: tzinfo
 ) -> tuple[datetime, datetime]:
     start = (
         from_datetime.replace(tzinfo=export_tz)
@@ -84,16 +81,16 @@ def _as_export_range(
         if to_datetime.tzinfo is None
         else to_datetime.astimezone(export_tz)
     )
-    return start.astimezone(ZoneInfo("UTC")), end.astimezone(ZoneInfo("UTC"))
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
-def _format_export_datetime(value: datetime, export_tz: ZoneInfo) -> str:
+def _format_export_datetime(value: datetime, export_tz: tzinfo) -> str:
     if value.tzinfo is None:
-        value = value.replace(tzinfo=ZoneInfo("UTC"))
+        value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(export_tz).isoformat()
 
 
-def _event_export_value(event: ContributionEvent, key: str, export_tz: ZoneInfo) -> str:
+def _event_export_value(event: ContributionEvent, key: str, export_tz: tzinfo) -> str:
     details: dict[str, Any] = event.export_details or {}
     if key == "received_at":
         return _format_export_datetime(event.received_at, export_tz)
@@ -107,7 +104,7 @@ def _event_export_value(event: ContributionEvent, key: str, export_tz: ZoneInfo)
     return "" if value is None else str(value)
 
 
-def _row_export_value(row: dict[str, Any], key: str, export_tz: ZoneInfo) -> str:
+def _row_export_value(row: dict[str, Any], key: str, export_tz: tzinfo) -> str:
     value = row.get(key)
     if isinstance(value, datetime):
         return _format_export_datetime(value, export_tz)
@@ -475,7 +472,9 @@ async def sample_export_fields(
     require_roles(membership, Role.OWNER, Role.FINANCE)
 
     org = await db.get(Organization, organization_id)
-    export_tz = _export_timezone(org.timezone) if org is not None else ZoneInfo("UTC")
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+    export_tz = _export_timezone(org.timezone)
 
     samples: dict[str, list[str]] = {key: [] for key in FIELD_LABELS}
     connection = None
@@ -544,7 +543,9 @@ async def export_contributions_csv(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select a connected mailbox.")
 
     org = await db.get(Organization, organization_id)
-    export_tz = _export_timezone(org.timezone) if org is not None else ZoneInfo("UTC")
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+    export_tz = _export_timezone(org.timezone)
 
     field_keys = DEFAULT_EXPORT_FIELDS
     field_labels = {key: FIELD_LABELS[key] for key in field_keys}
@@ -556,6 +557,7 @@ async def export_contributions_csv(
         field_labels = template.field_labels
 
     keyword_terms = _keyword_list(keywords)
+    await consume_export_quota(db, org)
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -587,6 +589,7 @@ async def export_contributions_csv(
         for event in events:
             writer.writerow([_event_export_value(event, key, export_tz) for key in field_keys])
     buffer.seek(0)
+    await db.commit()
 
     return StreamingResponse(
         iter([buffer.getvalue()]),

@@ -14,6 +14,7 @@ from app.api.v1.schemas import (
     OrganizationOut,
     SwitchPlanRequest,
 )
+from app.db.models.billing import BillingSubscription, BillingSubscriptionStatus
 from app.db.models.membership import MFA_REQUIRED_ROLES, Membership, MembershipStatus, Role
 from app.db.models.organization import Organization, SubscriptionStatus
 from app.db.models.plan import Plan
@@ -22,6 +23,7 @@ from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_add_team_member
 from app.domain.rbac import require_roles
+from app.integrations.paypal import PayPalClient, get_paypal_client
 
 router = APIRouter(prefix="/v1/organizations", tags=["organizations"])
 
@@ -288,6 +290,7 @@ async def cancel_subscription(
     membership: Membership = Depends(get_membership),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    paypal: PayPalClient = Depends(get_paypal_client),
 ) -> Organization:
     """Cancels immediately; new sessions/connections/templates stop right
     away, but historical reports stay readable through grace_period_ends_at
@@ -298,6 +301,29 @@ async def cancel_subscription(
     org = await db.get(Organization, membership.organization_id)
     if org is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+
+    result = await db.execute(
+        select(BillingSubscription)
+        .where(
+            BillingSubscription.organization_id == org.id,
+            BillingSubscription.status.in_(
+                [
+                    BillingSubscriptionStatus.APPROVAL_PENDING,
+                    BillingSubscriptionStatus.ACTIVE,
+                    BillingSubscriptionStatus.PAST_DUE,
+                    BillingSubscriptionStatus.SUSPENDED,
+                ]
+            ),
+        )
+        .order_by(BillingSubscription.created_at.desc())
+    )
+    billing_subscription = result.scalars().first()
+    if billing_subscription is not None:
+        await paypal.cancel_subscription(
+            billing_subscription.provider_subscription_id, "Canceled by organization owner."
+        )
+        billing_subscription.status = BillingSubscriptionStatus.CANCELED
+        billing_subscription.canceled_at = datetime.now(timezone.utc)
 
     org.subscription_status = SubscriptionStatus.CANCELED
     org.grace_period_ends_at = datetime.now(timezone.utc) + timedelta(days=30)

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
-import { orgApi, plansApi } from "@/lib/endpoints";
+import { billingApi, orgApi, plansApi } from "@/lib/endpoints";
 import type { SubscriptionStatus } from "@/lib/types";
 import { Badge, Button, Card, ErrorText, Spinner } from "@/components/ui";
 
@@ -21,6 +21,11 @@ export default function BillingPage() {
   const [error, setError] = useState<string | null>(null);
 
   const plansQuery = useQuery({ queryKey: ["plans"], queryFn: plansApi.list });
+  const billingQuery = useQuery({
+    queryKey: ["billing-overview", activeOrg?.id],
+    queryFn: () => billingApi.overview(activeOrg!.id),
+    enabled: !!activeOrg && (activeOrg.role === "owner" || activeOrg.role === "finance"),
+  });
 
   const cancelMutation = useMutation({
     mutationFn: () => orgApi.cancelSubscription(activeOrg!.id),
@@ -49,6 +54,19 @@ export default function BillingPage() {
     },
   });
 
+  const startPayPalMutation = useMutation({
+    mutationFn: (planId: string) => billingApi.startPayPalSubscription(activeOrg!.id, planId),
+    onSuccess: (result) => {
+      setConfirmingPlanId(null);
+      setError(null);
+      window.location.assign(result.approval_url);
+    },
+    onError: (err) => {
+      setConfirmingPlanId(null);
+      setError(err instanceof ApiError ? err.message : "Could not start PayPal subscription.");
+    },
+  });
+
   if (!activeOrg) return null;
 
   if (activeOrg.role !== "owner" && activeOrg.role !== "finance") {
@@ -61,6 +79,15 @@ export default function BillingPage() {
 
   const currentPlan = plansQuery.data?.find((p) => p.id === activeOrg.plan_id);
   const isCanceled = activeOrg.subscription_status === "canceled";
+  const discountedCents = (cents: number) =>
+    Math.round(cents * (100 - (activeOrg.discount_percent ?? 0)) / 100);
+  const formatPrice = (cents: number) =>
+    cents === 0
+      ? "Free"
+      : new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: "USD",
+        }).format(cents / 100);
 
   return (
     <div className="space-y-6">
@@ -75,6 +102,21 @@ export default function BillingPage() {
             <dt className="text-slate-500 dark:text-slate-400">Plan</dt>
             <dd className="text-slate-700 dark:text-slate-300">{currentPlan?.name ?? "—"}</dd>
           </div>
+          {currentPlan && (
+            <div className="flex justify-between">
+              <dt className="text-slate-500 dark:text-slate-400">Amount</dt>
+              <dd className="text-slate-700 dark:text-slate-300">
+                {formatPrice(discountedCents(currentPlan.monthly_price_cents))}
+                {currentPlan.monthly_price_cents > 0 && " / month"}
+              </dd>
+            </div>
+          )}
+          {activeOrg.discount_percent > 0 && (
+            <div className="flex justify-between">
+              <dt className="text-slate-500 dark:text-slate-400">Discount</dt>
+              <dd className="text-slate-700 dark:text-slate-300">{activeOrg.discount_percent}%</dd>
+            </div>
+          )}
           <div className="flex justify-between">
             <dt className="text-slate-500 dark:text-slate-400">Status</dt>
             <dd>
@@ -88,6 +130,22 @@ export default function BillingPage() {
               <dt className="text-slate-500 dark:text-slate-400">Reports readable until</dt>
               <dd className="text-slate-700 dark:text-slate-300">
                 {new Date(activeOrg.grace_period_ends_at).toLocaleDateString()}
+              </dd>
+            </div>
+          )}
+          {billingQuery.data?.subscription && (
+            <div className="flex justify-between">
+              <dt className="text-slate-500 dark:text-slate-400">PayPal subscription</dt>
+              <dd className="text-slate-700 dark:text-slate-300">
+                {billingQuery.data.subscription.status.replace("_", " ")}
+              </dd>
+            </div>
+          )}
+          {billingQuery.data?.subscription?.current_period_end && (
+            <div className="flex justify-between">
+              <dt className="text-slate-500 dark:text-slate-400">Paid through</dt>
+              <dd className="text-slate-700 dark:text-slate-300">
+                {new Date(billingQuery.data.subscription.current_period_end).toLocaleDateString()}
               </dd>
             </div>
           )}
@@ -151,11 +209,35 @@ export default function BillingPage() {
                     <span className="font-semibold text-slate-900 dark:text-slate-100">{plan.name}</span>
                     {isCurrent && <Badge tone="blue">Current</Badge>}
                   </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                    {formatPrice(discountedCents(plan.monthly_price_cents))}
+                    {plan.monthly_price_cents > 0 && (
+                      <span className="text-xs font-normal text-slate-500 dark:text-slate-400"> / month</span>
+                    )}
+                  </div>
+                  {activeOrg.discount_percent > 0 && plan.monthly_price_cents > 0 && (
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      {activeOrg.discount_percent}% account discount applied
+                    </div>
+                  )}
                   <ul className="mt-3 flex-1 space-y-1 text-xs text-slate-500 dark:text-slate-400">
                     <li>{plan.max_sessions_per_month} sessions / month</li>
                     <li>{plan.max_mailbox_connections} mailbox connections</li>
+                    <li>
+                      {plan.max_session_mailbox_connections === null
+                        ? "Unlimited emails per session"
+                        : `${plan.max_session_mailbox_connections} email${plan.max_session_mailbox_connections === 1 ? "" : "s"} per session`}
+                    </li>
+                    <li>
+                      {plan.max_exports_per_month === null
+                        ? "Unlimited transaction exports"
+                        : plan.max_exports_per_month === 0
+                          ? "No transaction exports"
+                          : `${plan.max_exports_per_month} transaction exports / month`}
+                    </li>
                     <li>{plan.max_display_templates} display templates</li>
                     <li>{plan.max_team_members} team seats</li>
+                    {plan.key === "starter" && <li>Projection watermark required</li>}
                     {plan.allows_custom_subdomain && <li>Custom subdomain</li>}
                     {plan.allows_sso && <li>SSO</li>}
                   </ul>
@@ -166,14 +248,22 @@ export default function BillingPage() {
                           <p className="text-xs text-slate-600 dark:text-slate-300">Switch to {plan.name} now?</p>
                           <div className="flex gap-2">
                             <Button
-                              disabled={switchPlanMutation.isPending}
-                              onClick={() => switchPlanMutation.mutate(plan.id)}
+                              disabled={switchPlanMutation.isPending || startPayPalMutation.isPending}
+                              onClick={() =>
+                                plan.monthly_price_cents > 0
+                                  ? startPayPalMutation.mutate(plan.id)
+                                  : switchPlanMutation.mutate(plan.id)
+                              }
                             >
-                              {switchPlanMutation.isPending ? "Switching…" : "Confirm"}
+                              {switchPlanMutation.isPending || startPayPalMutation.isPending
+                                ? "Working…"
+                                : plan.monthly_price_cents > 0
+                                  ? "Continue to PayPal"
+                                  : "Confirm"}
                             </Button>
                             <Button
                               variant="secondary"
-                              disabled={switchPlanMutation.isPending}
+                              disabled={switchPlanMutation.isPending || startPayPalMutation.isPending}
                               onClick={() => setConfirmingPlanId(null)}
                             >
                               Cancel
@@ -198,6 +288,36 @@ export default function BillingPage() {
           </p>
         )}
       </Card>
+
+      {(billingQuery.data?.payments.length || billingQuery.data?.refunds.length) ? (
+        <Card>
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            PayPal activity
+          </h2>
+          <div className="space-y-3 text-sm">
+            {billingQuery.data.payments.slice(0, 5).map((payment) => (
+              <div key={payment.id} className="flex justify-between border-b border-slate-100 pb-2 dark:border-slate-700">
+                <span className="text-slate-600 dark:text-slate-300">
+                  Payment {new Date(payment.created_at).toLocaleDateString()}
+                </span>
+                <span className="text-slate-900 dark:text-slate-100">
+                  {payment.currency} {payment.amount} · {payment.status.replace("_", " ")}
+                </span>
+              </div>
+            ))}
+            {billingQuery.data.refunds.slice(0, 5).map((refund) => (
+              <div key={refund.id} className="flex justify-between border-b border-slate-100 pb-2 dark:border-slate-700">
+                <span className="text-slate-600 dark:text-slate-300">
+                  Refund {new Date(refund.created_at).toLocaleDateString()}
+                </span>
+                <span className="text-slate-900 dark:text-slate-100">
+                  {refund.currency} {refund.amount} · {refund.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }

@@ -12,42 +12,54 @@ SEED_PLANS = [
     {
         "key": "starter",
         "name": "Starter",
-        "max_sessions_per_month": 4,
+        "max_sessions_per_month": 2,
         "max_mailbox_connections": 1,
         "max_display_templates": 2,
         "max_team_members": 5,
         "allows_custom_subdomain": False,
         "allows_sso": False,
+        "monthly_price_cents": 0,
+        "max_exports_per_month": 0,
+        "max_session_mailbox_connections": 1,
     },
     {
         "key": "growth",
         "name": "Growth",
-        "max_sessions_per_month": 20,
+        "max_sessions_per_month": 3,
         "max_mailbox_connections": 3,
         "max_display_templates": 5,
         "max_team_members": 15,
         "allows_custom_subdomain": False,
         "allows_sso": False,
+        "monthly_price_cents": 700,
+        "max_exports_per_month": 3,
+        "max_session_mailbox_connections": 1,
     },
     {
         "key": "premium",
         "name": "Premium",
-        "max_sessions_per_month": 100,
+        "max_sessions_per_month": 8,
         "max_mailbox_connections": 10,
         "max_display_templates": 20,
         "max_team_members": 50,
         "allows_custom_subdomain": True,
         "allows_sso": True,
+        "monthly_price_cents": 1300,
+        "max_exports_per_month": 10,
+        "max_session_mailbox_connections": 2,
     },
     {
         "key": "enterprise",
-        "name": "Enterprise / Diocese",
+        "name": "Enterprise / Diocese / Zone",
         "max_sessions_per_month": 1000,
         "max_mailbox_connections": 100,
         "max_display_templates": 100,
         "max_team_members": 500,
         "allows_custom_subdomain": True,
         "allows_sso": True,
+        "monthly_price_cents": 4500,
+        "max_exports_per_month": None,
+        "max_session_mailbox_connections": None,
     },
 ]
 
@@ -64,3 +76,7 @@ class Plan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     max_team_members: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     allows_custom_subdomain: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     allows_sso: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    monthly_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paypal_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    max_exports_per_month: Mapped[int | None] = mapped_column(Integer)
+    max_session_mailbox_connections: Mapped[int | None] = mapped_column(Integer, default=1)

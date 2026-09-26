@@ -67,6 +67,13 @@ _PAGE = """<!doctype html>
     position: absolute; box-sizing: border-box; display: flex; align-items: center;
     overflow: hidden; white-space: pre-wrap;
   }
+  #required-watermark {
+    position: fixed; right: 1rem; bottom: 0.8rem; z-index: 3000;
+    padding: 0.35rem 0.55rem; border-radius: 0.25rem;
+    background: rgba(0, 0, 0, 0.55); color: #ffffff;
+    font-size: clamp(0.75rem, 1.4vw, 1.15rem); letter-spacing: 0;
+    pointer-events: none;
+  }
   .el-progress-track { padding: 0 !important; }
   .el-progress-fill { height: 100%; transition: width 400ms ease; }
   #celebration {
@@ -115,6 +122,7 @@ _PAGE = """<!doctype html>
   </main>
 
   <div id="template-stage" hidden aria-hidden="true"></div>
+  <div id="required-watermark" hidden>Powered by LetsGive.ca</div>
 
   <div id="celebration" hidden aria-live="polite">
     <div class="emoji" aria-hidden="true">🎉🎊🎉</div>
@@ -136,6 +144,7 @@ _PAGE = """<!doctype html>
   const statusText = document.getElementById("statusText");
   const templateStage = document.getElementById("template-stage");
   const celebrationEl = document.getElementById("celebration");
+  const requiredWatermark = document.getElementById("required-watermark");
 
   let lastCount = null;
   let endsAt = null;
@@ -162,6 +171,7 @@ _PAGE = """<!doctype html>
   // --- generic (no template bound) rendering -------------------------------
 
   function renderGeneric(state) {
+    requiredWatermark.hidden = !state.requires_watermark;
     orgEl.textContent = state.organization_name || "";
     countEl.textContent = state.contribution_count;
     if (lastCount !== null && state.contribution_count > lastCount) {
@@ -313,6 +323,7 @@ _PAGE = """<!doctype html>
 
   function render(state) {
     document.title = "Let's Give — " + (state.organization_name || "");
+    requiredWatermark.hidden = !state.requires_watermark;
     endsAt = state.ends_at ? new Date(state.ends_at) : null;
     if (template) {
       renderTemplateDynamicContent(state);

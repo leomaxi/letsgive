@@ -37,6 +37,7 @@ export interface Organization {
   plan_id: string | null;
   subscription_status: SubscriptionStatus;
   grace_period_ends_at: string | null;
+  discount_percent: number;
 }
 
 export interface MyOrganization extends Organization {
@@ -105,6 +106,66 @@ export interface Plan {
   max_team_members: number;
   allows_custom_subdomain: boolean;
   allows_sso: boolean;
+  monthly_price_cents: number;
+  paypal_plan_id: string | null;
+  max_exports_per_month: number | null;
+  max_session_mailbox_connections: number | null;
+}
+
+export interface StartPayPalSubscriptionResponse {
+  billing_subscription_id: string;
+  paypal_subscription_id: string;
+  approval_url: string;
+}
+
+export interface BillingSubscription {
+  id: string;
+  organization_id: string;
+  plan_id: string;
+  provider_subscription_id: string;
+  status: string;
+  currency: string;
+  amount: string;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  canceled_at: string | null;
+  created_at: string;
+}
+
+export interface BillingPayment {
+  id: string;
+  organization_id: string;
+  billing_subscription_id: string | null;
+  provider_payment_id: string;
+  provider_capture_id: string | null;
+  amount: string;
+  currency: string;
+  status: string;
+  period_start: string | null;
+  period_end: string | null;
+  created_at: string;
+}
+
+export interface BillingRefund {
+  id: string;
+  organization_id: string;
+  billing_payment_id: string;
+  requested_by_user_id: string;
+  provider_refund_id: string | null;
+  amount: string;
+  currency: string;
+  reason: string;
+  status: string;
+  processed_at: string | null;
+  created_at: string;
+}
+
+export interface BillingOverview {
+  subscription: BillingSubscription | null;
+  payments: BillingPayment[];
+  refunds: BillingRefund[];
+  refundable_amount: string;
+  refundable_payment_id: string | null;
 }
 
 export interface ApiErrorBody {
@@ -125,6 +186,7 @@ export interface SessionOperator {
   id: string;
   organization_id: string;
   mailbox_connection_id: string | null;
+  mailbox_connection_ids: string[];
   display_template_id: string | null;
   status: SessionStatus;
   version: number;
@@ -143,6 +205,7 @@ export interface SessionOperator {
   active_approval_expires_at: string | null;
   contribution_count: number;
   total_amount: string | null;
+  requires_watermark?: boolean;
 }
 
 export type ContributionDecision =
@@ -391,6 +454,7 @@ export interface AdminOrganization {
   subscription_status: SubscriptionStatus;
   plan_starts_at: string | null;
   plan_expires_at: string | null;
+  discount_percent: number;
   member_count: number;
   created_at: string;
 }

@@ -5,6 +5,8 @@ import type {
   AdminSupportTicket,
   AdminSupportTicketDetail,
   AuditLogEntry,
+  BillingOverview,
+  BillingRefund,
   ContributionEvent,
   ContributionExportField,
   ContributionExportTemplate,
@@ -33,6 +35,7 @@ import type {
   SessionOperator,
   SessionReport,
   SessionStatus,
+  StartPayPalSubscriptionResponse,
   SubscriptionStatus,
   SupportTicket,
   SupportTicketDetail,
@@ -117,6 +120,16 @@ export const plansApi = {
   list: () => api.get<Plan[]>("/v1/plans"),
 };
 
+export const billingApi = {
+  overview: (orgId: string) => api.get<BillingOverview>(`/v1/organizations/${orgId}/billing`),
+
+  startPayPalSubscription: (orgId: string, planId: string) =>
+    api.post<StartPayPalSubscriptionResponse>(
+      `/v1/organizations/${orgId}/billing/paypal-subscription`,
+      { plan_id: planId }
+    ),
+};
+
 export const notificationApi = {
   list: (unreadOnly = false) =>
     api.get<Notification[]>(`/v1/me/notifications${unreadOnly ? "?unread_only=true" : ""}`),
@@ -151,6 +164,7 @@ export interface CreateSessionPayload {
   contribution_method: string;
   duration_seconds: number;
   mailbox_connection_id?: string;
+  mailbox_connection_ids?: string[];
   display_template_id?: string;
   goal_enabled?: boolean;
   goal_amount?: string;
@@ -412,6 +426,7 @@ export interface AdminSubscriptionUpdatePayload {
   subscription_status?: SubscriptionStatus;
   plan_starts_at?: string;
   plan_expires_at?: string;
+  discount_percent?: number;
 }
 
 export const adminApi = {
@@ -427,6 +442,9 @@ export const adminApi = {
 
   updateSubscription: (orgId: string, payload: AdminSubscriptionUpdatePayload) =>
     api.post<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}/subscription`, payload),
+
+  processRefund: (orgId: string, reason: string) =>
+    api.post<BillingRefund>(`/v1/admin/organizations/${orgId}/refund`, { reason }),
 
   listTickets: (status?: SupportTicketStatus, organizationId?: string) => {
     const params = new URLSearchParams();

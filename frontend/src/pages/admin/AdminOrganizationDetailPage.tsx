@@ -22,6 +22,9 @@ export default function AdminOrganizationDetailPage() {
   const [subscriptionStatus, setSubscriptionStatus] = useState("");
   const [planStartsAt, setPlanStartsAt] = useState("");
   const [planExpiresAt, setPlanExpiresAt] = useState("");
+  const [discountPercent, setDiscountPercent] = useState("");
+  const [refundReason, setRefundReason] = useState("");
+  const [refundMessage, setRefundMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const orgQuery = useQuery({
@@ -38,18 +41,34 @@ export default function AdminOrganizationDetailPage() {
         subscription_status: (subscriptionStatus || undefined) as SubscriptionStatus | undefined,
         plan_starts_at: planStartsAt || undefined,
         plan_expires_at: planExpiresAt || undefined,
+        discount_percent: discountPercent === "" ? undefined : Number(discountPercent),
       }),
     onSuccess: () => {
       setPlanId("");
       setSubscriptionStatus("");
       setPlanStartsAt("");
       setPlanExpiresAt("");
+      setDiscountPercent("");
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
       queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
     },
     onError: (err) =>
       setError(err instanceof ApiError ? err.message : "Could not update the subscription."),
+  });
+
+  const refundMutation = useMutation({
+    mutationFn: () => adminApi.processRefund(orgId!, refundReason),
+    onSuccess: (refund) => {
+      setRefundReason("");
+      setRefundMessage(`Refund ${refund.currency} ${refund.amount} submitted to PayPal.`);
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
+    },
+    onError: (err) => {
+      setRefundMessage(null);
+      setError(err instanceof ApiError ? err.message : "Could not process the refund.");
+    },
   });
 
   if (orgQuery.isLoading) {
@@ -101,6 +120,10 @@ export default function AdminOrganizationDetailPage() {
           <div className="flex justify-between">
             <dt className="text-slate-500 dark:text-slate-400">Members</dt>
             <dd className="text-slate-700 dark:text-slate-300">{org.member_count}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-slate-500 dark:text-slate-400">Discount</dt>
+            <dd className="text-slate-700 dark:text-slate-300">{org.discount_percent}%</dd>
           </div>
           <div className="flex justify-between">
             <dt className="text-slate-500 dark:text-slate-400">Mailbox connections</dt>
@@ -162,6 +185,17 @@ export default function AdminOrganizationDetailPage() {
               </select>
             </Field>
           </div>
+          <Field label="Account discount (%)" htmlFor="discountPercent">
+            <Input
+              id="discountPercent"
+              type="number"
+              min={0}
+              max={100}
+              value={discountPercent}
+              onChange={(e) => setDiscountPercent(e.target.value)}
+              placeholder={`${org.discount_percent}`}
+            />
+          </Field>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Plan starts" htmlFor="planStartsAt">
               <Input
@@ -188,12 +222,42 @@ export default function AdminOrganizationDetailPage() {
           <ErrorText>{error}</ErrorText>
           <Button
             disabled={
-              (!planId && !subscriptionStatus && !planStartsAt && !planExpiresAt) ||
+              (!planId && !subscriptionStatus && !planStartsAt && !planExpiresAt && !discountPercent) ||
               updateMutation.isPending
             }
             onClick={() => updateMutation.mutate()}
           >
             {updateMutation.isPending ? "Saving…" : "Apply changes"}
+          </Button>
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Refund
+        </h2>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Processes a PayPal refund for the unused portion of the latest monthly payment. A reason is
+          required and will be stored in the audit trail.
+        </p>
+        <Field label="Refund reason" htmlFor="refundReason">
+          <textarea
+            id="refundReason"
+            className="min-h-24 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            value={refundReason}
+            onChange={(e) => setRefundReason(e.target.value)}
+            maxLength={1000}
+          />
+        </Field>
+        {refundMessage && <p className="mt-2 text-sm text-green-600 dark:text-green-400">{refundMessage}</p>}
+        <ErrorText>{error}</ErrorText>
+        <div className="mt-3">
+          <Button
+            variant="danger"
+            disabled={refundReason.trim().length < 3 || refundMutation.isPending}
+            onClick={() => refundMutation.mutate()}
+          >
+            {refundMutation.isPending ? "Processing…" : "Process prorated refund"}
           </Button>
         </div>
       </Card>

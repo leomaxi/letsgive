@@ -6,10 +6,12 @@ from app.api.v1.deps import get_platform_admin
 from app.api.v1.schemas import (
     AdminOrganizationDetailOut,
     AdminOrganizationOut,
+    AdminRefundRequest,
     AdminSubscriptionUpdateRequest,
     AdminSupportTicketDetailOut,
     AdminSupportTicketOut,
     AuditLogOut,
+    BillingRefundOut,
     SupportTicketMessageCreateRequest,
     SupportTicketMessageOut,
     SupportTicketOut,
@@ -27,6 +29,8 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
 from app.domain.inbox import notify_user
+from app.domain.subscriptions import create_prorated_refund
+from app.integrations.paypal import PayPalClient, get_paypal_client
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -80,6 +84,7 @@ async def list_organizations(
             subscription_status=org.subscription_status,
             plan_starts_at=org.plan_starts_at,
             plan_expires_at=org.plan_expires_at,
+            discount_percent=org.discount_percent,
             member_count=member_count or 0,
             created_at=org.created_at,
         )
@@ -126,6 +131,7 @@ async def get_organization(
         subscription_status=org.subscription_status,
         plan_starts_at=org.plan_starts_at,
         plan_expires_at=org.plan_expires_at,
+        discount_percent=org.discount_percent,
         member_count=member_count_result.scalar_one(),
         created_at=org.created_at,
         grace_period_ends_at=org.grace_period_ends_at,
@@ -160,6 +166,7 @@ async def update_subscription(
         "subscription_status": org.subscription_status.value,
         "plan_starts_at": org.plan_starts_at.isoformat() if org.plan_starts_at else None,
         "plan_expires_at": org.plan_expires_at.isoformat() if org.plan_expires_at else None,
+        "discount_percent": org.discount_percent,
     }
 
     if payload.plan_id is not None:
@@ -173,6 +180,8 @@ async def update_subscription(
         org.plan_starts_at = payload.plan_starts_at
     if payload.plan_expires_at is not None:
         org.plan_expires_at = payload.plan_expires_at
+    if payload.discount_percent is not None:
+        org.discount_percent = payload.discount_percent
 
     await record_audit_event(
         db,
@@ -187,11 +196,56 @@ async def update_subscription(
             "subscription_status": org.subscription_status.value,
             "plan_starts_at": org.plan_starts_at.isoformat() if org.plan_starts_at else None,
             "plan_expires_at": org.plan_expires_at.isoformat() if org.plan_expires_at else None,
+            "discount_percent": org.discount_percent,
         },
         ip_address=_client_ip(request),
     )
     await db.commit()
     return await get_organization(organization_id, admin=admin, db=db)
+
+
+@router.post("/organizations/{organization_id}/refund", response_model=BillingRefundOut)
+async def process_refund(
+    organization_id: str,
+    payload: AdminRefundRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+    paypal: PayPalClient = Depends(get_paypal_client),
+) -> BillingRefundOut:
+    org = await db.get(Organization, organization_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+
+    try:
+        refund = await create_prorated_refund(
+            db,
+            organization_id=organization_id,
+            requested_by_user_id=admin.id,
+            reason=payload.reason,
+            paypal=paypal,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await record_audit_event(
+        db,
+        action="platform_admin.refund_processed",
+        target_type="billing_refund",
+        target_id=refund.id,
+        organization_id=organization_id,
+        actor_user_id=admin.id,
+        after={
+            "amount": str(refund.amount),
+            "currency": refund.currency,
+            "reason": refund.reason,
+            "paypal_refund_id": refund.provider_refund_id,
+        },
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    await db.refresh(refund)
+    return BillingRefundOut.model_validate(refund)
 
 
 def _to_admin_ticket_out(ticket: SupportTicket, org_name: str) -> AdminSupportTicketOut:

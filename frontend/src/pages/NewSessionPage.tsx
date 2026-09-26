@@ -38,7 +38,7 @@ export default function NewSessionPage() {
 
   const [contributionMethod, setContributionMethod] = useState(CONTRIBUTION_METHODS[0]);
   const [durationMinutes, setDurationMinutes] = useState(30);
-  const [connectionId, setConnectionId] = useState("");
+  const [connectionIds, setConnectionIds] = useState<string[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [testMode, setTestMode] = useState(false);
   const [goalEnabled, setGoalEnabled] = useState(false);
@@ -67,6 +67,12 @@ export default function NewSessionPage() {
   const connectedConnections = connectionsQuery.data?.filter((c) => c.status === "connected") ?? [];
   const defaultTemplate = templatesQuery.data?.find((t) => t.is_default);
 
+  function toggleConnection(connectionId: string, checked: boolean) {
+    setConnectionIds((current) =>
+      checked ? [...new Set([...current, connectionId])] : current.filter((id) => id !== connectionId),
+    );
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (durationError) {
@@ -80,7 +86,7 @@ export default function NewSessionPage() {
         organization_id: activeOrg!.id,
         contribution_method: contributionMethod,
         duration_seconds: durationSeconds,
-        mailbox_connection_id: connectionId || undefined,
+        mailbox_connection_ids: connectionIds.length > 0 ? connectionIds : undefined,
         display_template_id: templateId || undefined,
         test_mode: testMode,
         goal_enabled: goalEnabled,
@@ -149,21 +155,23 @@ export default function NewSessionPage() {
 
           {connectedConnections.length > 0 && (
             <div>
-              <Label htmlFor="connection">Mailbox connection</Label>
-              <Select
-                id="connection"
-                value={connectionId}
-                onChange={(e) => setConnectionId(e.target.value)}
-              >
-                <option value="">
-                  {connectedConnections.length === 1 ? "Auto (only connection)" : "Select…"}
-                </option>
+              <Label>Mailbox connections</Label>
+              <div className="mt-2 space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-700">
                 {connectedConnections.map((c) => (
-                  <option key={c.id} value={c.id}>
+                  <label key={c.id} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800"
+                      checked={connectionIds.includes(c.id)}
+                      onChange={(e) => toggleConnection(c.id, e.target.checked)}
+                    />
                     {c.mailbox}
-                  </option>
+                  </label>
                 ))}
-              </Select>
+              </div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Premium allows 2 mailboxes per session; Enterprise / Diocese / Zone allows unlimited.
+              </p>
             </div>
           )}
           {connectedConnections.length === 0 && !connectionsQuery.isLoading && (

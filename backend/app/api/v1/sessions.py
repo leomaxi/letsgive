@@ -26,6 +26,7 @@ from app.api.v1.deps import (
 )
 from app.api.v1.schemas import (
     ContributionEventOut,
+    DisplayElementOut,
     DisplayTemplateOut,
     DisplayTokenResponse,
     ExpectedVersionRequest,
@@ -58,10 +59,11 @@ from app.db.models.membership import Membership, MembershipStatus, Role
 from app.db.models.notification import NotificationType
 from app.db.models.organization import Organization
 from app.db.models.session import Session, SessionStatus
+from app.db.models.session_mailbox_connection import SessionMailboxConnection
 from app.db.models.user import User
 from app.db.session import get_db
 from app.domain.audit import record_audit_event
-from app.domain.billing import assert_can_create_session
+from app.domain.billing import assert_can_create_session, assert_session_mailbox_limit, plan_requires_watermark, WATERMARK_TEXT
 from app.domain.inbox import notify_user
 from app.domain.ledger import compute_ledger_totals
 from app.domain.notifications import Notifier, get_notifier
@@ -111,8 +113,17 @@ async def _operator_response(
         )
         active_approval = result.scalar_one_or_none()
     out = SessionOperatorOut.model_validate(session)
+    mailbox_ids_result = await db.execute(
+        select(SessionMailboxConnection.mailbox_connection_id).where(
+            SessionMailboxConnection.session_id == session.id
+        )
+    )
+    mailbox_connection_ids = list(mailbox_ids_result.scalars().all())
+    if not mailbox_connection_ids and session.mailbox_connection_id:
+        mailbox_connection_ids = [session.mailbox_connection_id]
     return out.model_copy(
         update={
+            "mailbox_connection_ids": mailbox_connection_ids,
             "contribution_count": count,
             "total_amount": total if _should_include_amounts(session, membership) else None,
             "operator_warning": warning,
@@ -155,6 +166,7 @@ async def _public_payload(db: AsyncSession, session: Session) -> SessionPublicOu
         # SessionPublicOut's docstring for why that split is deliberate.
         total_amount=total if session.amount_visible else None,
         goal_reached=goal_reached,
+        requires_watermark=await plan_requires_watermark(db, org) if org else True,
     )
 
 
@@ -196,7 +208,36 @@ async def create_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
     await assert_can_create_session(db, org)
 
-    mailbox_connection_id = payload.mailbox_connection_id
+    mailbox_connection_ids = list(dict.fromkeys(payload.mailbox_connection_ids or []))
+    if payload.mailbox_connection_id and payload.mailbox_connection_id not in mailbox_connection_ids:
+        mailbox_connection_ids.insert(0, payload.mailbox_connection_id)
+
+    if mailbox_connection_ids:
+        for mailbox_connection_id in mailbox_connection_ids:
+            connection = await db.get(MailboxConnection, mailbox_connection_id)
+            if (
+                connection is None
+                or connection.organization_id != org.id
+                or connection.status != ConnectionStatus.CONNECTED
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="mailbox_connection_ids must reference connected mailboxes in this organization.",
+                )
+        await assert_session_mailbox_limit(db, org, mailbox_connection_ids)
+    else:
+        mailbox_connection_id = None
+        result = await db.execute(
+            select(MailboxConnection).where(
+                MailboxConnection.organization_id == org.id,
+                MailboxConnection.status == ConnectionStatus.CONNECTED,
+            )
+        )
+        connected = list(result.scalars().all())
+        if len(connected) == 1:
+            mailbox_connection_ids = [connected[0].id]
+
+    mailbox_connection_id = mailbox_connection_ids[0] if mailbox_connection_ids else None
     if mailbox_connection_id is not None:
         connection = await db.get(MailboxConnection, mailbox_connection_id)
         if (
@@ -208,16 +249,6 @@ async def create_session(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="mailbox_connection_id must reference a connected mailbox in this organization.",
             )
-    else:
-        result = await db.execute(
-            select(MailboxConnection).where(
-                MailboxConnection.organization_id == org.id,
-                MailboxConnection.status == ConnectionStatus.CONNECTED,
-            )
-        )
-        connected = list(result.scalars().all())
-        if len(connected) == 1:
-            mailbox_connection_id = connected[0].id
 
     display_template_id = payload.display_template_id
     if display_template_id is not None:
@@ -252,6 +283,8 @@ async def create_session(
     )
     db.add(session)
     await db.flush()
+    for connection_id in mailbox_connection_ids:
+        db.add(SessionMailboxConnection(session_id=session.id, mailbox_connection_id=connection_id))
 
     await record_audit_event(
         db,
@@ -260,7 +293,11 @@ async def create_session(
         target_id=session.id,
         organization_id=org.id,
         actor_user_id=current_user.id,
-        after={"contribution_method": session.contribution_method, "test_mode": session.test_mode},
+        after={
+            "contribution_method": session.contribution_method,
+            "test_mode": session.test_mode,
+            "mailbox_connection_ids": mailbox_connection_ids,
+        },
         ip_address=_client_ip(request),
     )
 
@@ -819,6 +856,7 @@ async def get_public_display_template(
         return None
 
     out = DisplayTemplateOut.model_validate(template)
+    org = await db.get(Organization, session.organization_id)
     for element in out.elements:
         # QR images are rendered here, not stored: only the raw value is
         # persisted, so re-rendering (e.g. after the value changes) never
@@ -827,6 +865,36 @@ async def get_public_display_template(
             value = element.binding.get("value")
             if value:
                 element.binding = {**element.binding, "qr_data_uri": qr_data_uri(str(value))}
+    if org is not None and await plan_requires_watermark(db, org):
+        out.elements = [
+            element
+            for element in out.elements
+            if not (
+                element.type == ElementType.BODY_TEXT
+                and str(element.binding.get("text", "")).strip().lower() == WATERMARK_TEXT.lower()
+            )
+        ]
+        out.elements.append(
+            DisplayElementOut(
+                id="letsgive-required-watermark",
+                type=ElementType.BODY_TEXT,
+                x=1510,
+                y=1016,
+                width=360,
+                height=42,
+                z_index=2147483647,
+                style={
+                    "font_size": 22,
+                    "color": "#FFFFFF",
+                    "background_color": "rgba(0, 0, 0, 0.55)",
+                    "text_align": "center",
+                    "border_radius": 4,
+                },
+                binding={"text": WATERMARK_TEXT},
+                is_locked=True,
+                is_hidden=False,
+            )
+        )
     return out
 
 

@@ -40,6 +40,7 @@ function makeOperator(overrides: Partial<SessionOperator> = {}): SessionOperator
     id: "s1",
     organization_id: "org1",
     mailbox_connection_id: null,
+    mailbox_connection_ids: [],
     display_template_id: null,
     status: "live",
     version: 2,

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, String
+from sqlalchemy import Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin
@@ -61,6 +62,7 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # the background loop in app/main.py) reverts plan_id back to the Starter
     # plan once this passes, unless a platform admin renews/changes it first.
     plan_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    discount_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         SAEnum(

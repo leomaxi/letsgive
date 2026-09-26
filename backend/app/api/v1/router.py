@@ -4,12 +4,14 @@ from app.api.v1 import (
     admin,
     audit,
     auth,
+    billing,
     connections,
     display_templates,
     join_requests,
     me,
     notifications,
     organizations,
+    paypal,
     plans,
     reconciliation,
     reports,
@@ -33,7 +35,9 @@ api_router.include_router(reconciliation.router)
 api_router.include_router(reports.router)
 api_router.include_router(reports.org_reports_router)
 api_router.include_router(plans.router)
+api_router.include_router(billing.router)
 api_router.include_router(audit.router)
 api_router.include_router(support.router)
 api_router.include_router(admin.router)
 api_router.include_router(webhooks.router)
+api_router.include_router(paypal.router)
