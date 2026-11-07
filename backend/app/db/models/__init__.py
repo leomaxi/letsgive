@@ -10,6 +10,8 @@ from app.db.models.billing import (
     BillingSettings,
     BillingSubscription,
     BillingSubscriptionStatus,
+    CreditKind,
+    CreditPurchase,
 )
 from app.db.models.contribution_event import ContributionDecision, ContributionEvent
 from app.db.models.contribution_export_template import ContributionExportTemplate
@@ -47,6 +49,8 @@ __all__ = [
     "BillingSettings",
     "BillingSubscription",
     "BillingSubscriptionStatus",
+    "CreditKind",
+    "CreditPurchase",
     "ContributionDecision",
     "ContributionEvent",
     "ContributionExportTemplate",

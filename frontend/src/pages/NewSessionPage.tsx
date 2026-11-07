@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError } from "@/lib/api";
@@ -22,6 +22,7 @@ function formatDuration(totalSeconds: number): string {
 
 export default function NewSessionPage() {
   const { activeOrg } = useOrg();
+  const [outOfSessions, setOutOfSessions] = useState(false);
   const navigate = useNavigate();
 
   const connectionsQuery = useQuery({
@@ -95,6 +96,7 @@ export default function NewSessionPage() {
       navigate(`/sessions/${session.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the session.");
+      setOutOfSessions(err instanceof ApiError && err.status === 402);
     } finally {
       setSubmitting(false);
     }
@@ -246,6 +248,20 @@ export default function NewSessionPage() {
           </label>
 
           <ErrorText>{error}</ErrorText>
+          {outOfSessions && (
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {activeOrg.role === "media"
+                ? "Ask an Owner or Finance officer to buy extra sessions on the Billing page."
+                : (
+                  <>
+                    <Link to="/billing" className="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400">
+                      Buy extra sessions
+                    </Link>{" "}
+                    — they never expire and are ready as soon as payment goes through.
+                  </>
+                )}
+            </p>
+          )}
           <Button type="submit" className="w-full" disabled={submitting || !!durationError}>
             {submitting ? "Creating…" : "Create session"}
           </Button>

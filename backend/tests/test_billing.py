@@ -15,6 +15,7 @@ from app.db.models.billing import (
     BillingSubscriptionStatus,
 )
 from app.db.models.organization import Organization
+from app.db.models.organization import SubscriptionStatus as OrganizationSubscriptionStatus
 from app.db.models.plan import Plan
 from app.db.models.session_mailbox_connection import SessionMailboxConnection
 from app.db.models.audit_log import AuditLog
@@ -268,14 +269,12 @@ async def test_canceled_subscription_blocks_new_sessions_but_not_reports(
 
     session = await create_session(client, media_token, org["id"])
 
-    resp = await client.post(
-        f"/v1/organizations/{org['id']}/subscription/cancel",
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-    assert resp.status_code == 200, resp.text
-    canceled = resp.json()
-    assert canceled["subscription_status"] == "canceled"
-    assert canceled["grace_period_ends_at"] is not None
+    # The canceled lockout state is now only ever set by a platform admin
+    # (an owner's own cancel just stops auto-renew; see test_stripe_billing).
+    org_row = (await db_session.execute(select(Organization).where(Organization.id == org["id"]))).scalar_one()
+    org_row.subscription_status = OrganizationSubscriptionStatus.CANCELED
+    org_row.grace_period_ends_at = datetime.now(timezone.utc) + timedelta(days=30)
+    await db_session.commit()
 
     resp = await client.post(
         "/v1/sessions",
@@ -311,6 +310,8 @@ async def test_only_owner_can_cancel_subscription(client: AsyncClient, db_sessio
 
 
 async def test_owner_can_switch_plan(client: AsyncClient, db_session: AsyncSession):
+    """Self-service plan switching only ever moves an org to a free plan;
+    a paid plan needs a completed payment (see test_stripe_billing)."""
     owner_token = await register_and_login(client, "owner-switch@example.org")
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, "Switch Org")
@@ -325,20 +326,12 @@ async def test_owner_can_switch_plan(client: AsyncClient, db_session: AsyncSessi
         json={"plan_id": plans["growth"]["id"]},
         headers=headers,
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["plan_id"] == plans["growth"]["id"]
+    assert resp.status_code == 402, resp.text
 
-    # Switching to the plan already active is a harmless no-op.
-    resp = await client.post(
-        f"/v1/organizations/{org['id']}/subscription/switch-plan",
-        json={"plan_id": plans["growth"]["id"]},
-        headers=headers,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["plan_id"] == plans["growth"]["id"]
-
-    # A downgrade doesn't retroactively break anything already created --
-    # only new creation is gated (covered by the quota tests above).
+    # An admin-granted paid plan (no subscription) can be dropped back to free.
+    org_row = (await db_session.execute(select(Organization).where(Organization.id == org["id"]))).scalar_one()
+    org_row.plan_id = plans["growth"]["id"]
+    await db_session.commit()
     resp = await client.post(
         f"/v1/organizations/{org['id']}/subscription/switch-plan",
         json={"plan_id": plans["starter"]["id"]},
@@ -346,6 +339,14 @@ async def test_owner_can_switch_plan(client: AsyncClient, db_session: AsyncSessi
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["plan_id"] == plans["starter"]["id"]
+
+    # Switching to the plan already active is a harmless no-op.
+    resp = await client.post(
+        f"/v1/organizations/{org['id']}/subscription/switch-plan",
+        json={"plan_id": plans["starter"]["id"]},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
 
 
 async def test_switch_plan_rejects_unknown_plan_and_non_owner(
@@ -382,7 +383,12 @@ async def test_cannot_switch_plan_after_cancellation(client: AsyncClient, db_ses
     org = await create_org(client, owner_token, "Switch Canceled Org")
     headers = {"Authorization": f"Bearer {owner_token}"}
 
-    await client.post(f"/v1/organizations/{org['id']}/subscription/cancel", headers=headers)
+    # The canceled lockout state is now only ever set by a platform admin
+    # (an owner's own cancel just stops auto-renew; see test_stripe_billing).
+    org_row = (await db_session.execute(select(Organization).where(Organization.id == org["id"]))).scalar_one()
+    org_row.subscription_status = OrganizationSubscriptionStatus.CANCELED
+    org_row.grace_period_ends_at = datetime.now(timezone.utc) + timedelta(days=30)
+    await db_session.commit()
 
     resp = await client.get("/v1/plans", headers=headers)
     growth_id = next(p["id"] for p in resp.json() if p["key"] == "growth")
@@ -412,8 +418,12 @@ async def test_reports_stay_readable_within_grace_period_but_not_after(
     headers = {"Authorization": f"Bearer {owner_token}"}
     session = await create_session(client, media_token, org["id"])
 
-    resp = await client.post(f"/v1/organizations/{org['id']}/subscription/cancel", headers=headers)
-    assert resp.status_code == 200, resp.text
+    # The canceled lockout state is now only ever set by a platform admin
+    # (an owner's own cancel just stops auto-renew; see test_stripe_billing).
+    org_row = (await db_session.execute(select(Organization).where(Organization.id == org["id"]))).scalar_one()
+    org_row.subscription_status = OrganizationSubscriptionStatus.CANCELED
+    org_row.grace_period_ends_at = datetime.now(timezone.utc) + timedelta(days=30)
+    await db_session.commit()
 
     # Still within the grace period -- the JSON report, the CSV export, and
     # the PDF export all stay readable, same as before cancellation.
@@ -460,62 +470,6 @@ async def test_admin_refund_requires_reason(client: AsyncClient, db_session: Asy
     assert resp.status_code == 422
 
 
-async def test_admin_processes_prorated_paypal_refund(
-    client: AsyncClient, db_session: AsyncSession
-):
-    owner_token = await register_and_login(client, "owner-refund@example.org")
-    await enable_mfa(client, owner_token)
-    org = await create_org(client, owner_token, "Refund Org")
-
-    admin_token = await register_and_login(client, "admin-refund@example.org")
-    admin_resp = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {admin_token}"})
-    await make_platform_admin(db_session, admin_resp.json()["id"])
-
-    plan_result = await db_session.execute(select(Plan).where(Plan.key == "growth"))
-    plan = plan_result.scalar_one()
-    subscription = BillingSubscription(
-        organization_id=org["id"],
-        plan_id=plan.id,
-        provider_subscription_id="I-TEST",
-        status=BillingSubscriptionStatus.ACTIVE,
-        currency="CAD",
-        amount=Decimal("29.00"),
-    )
-    db_session.add(subscription)
-    await db_session.flush()
-    now = datetime.now(timezone.utc)
-    payment = BillingPayment(
-        organization_id=org["id"],
-        billing_subscription_id=subscription.id,
-        provider_payment_id="SALE-TEST",
-        provider_capture_id="CAPTURE-TEST",
-        amount=Decimal("30.00"),
-        currency="CAD",
-        status=BillingPaymentStatus.COMPLETED,
-        period_start=now - timedelta(days=10),
-        period_end=now + timedelta(days=20),
-    )
-    db_session.add(payment)
-    await db_session.commit()
-
-    fake_paypal = FakePayPalClient()
-    app.dependency_overrides[get_paypal_client] = lambda: fake_paypal
-    resp = await client.post(
-        f"/v1/admin/organizations/{org['id']}/refund",
-        json={"reason": "Customer canceled mid-cycle."},
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    app.dependency_overrides.pop(get_paypal_client, None)
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["provider_refund_id"] == "R-TEST"
-    assert body["status"] == "completed"
-    assert Decimal(body["amount"]) == Decimal("20.00")
-    assert fake_paypal.refunds[0]["capture_id"] == "CAPTURE-TEST"
-    assert fake_paypal.refunds[0]["amount"] == Decimal("20.00")
-
-
 async def test_starter_plan_cannot_export_transactions(
     client: AsyncClient, db_session: AsyncSession
 ):
@@ -531,38 +485,6 @@ async def test_starter_plan_cannot_export_transactions(
             "from_datetime": datetime.now(timezone.utc).isoformat(),
             "to_datetime": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
         },
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-    assert resp.status_code == 402, resp.text
-
-
-async def test_growth_export_quota_is_three_per_month(client: AsyncClient, db_session: AsyncSession):
-    owner_token = await register_and_login(client, "owner-exportquota@example.org")
-    await enable_mfa(client, owner_token)
-    org = await create_org(client, owner_token, "Export Quota Org")
-    plan_result = await db_session.execute(select(Plan).where(Plan.key == "growth"))
-    org_result = await db_session.execute(select(Organization).where(Organization.id == org["id"]))
-    org_row = org_result.scalar_one()
-    org_row.plan_id = plan_result.scalar_one().id
-    await db_session.commit()
-    connection = await create_fake_connection(client, owner_token, org["id"])
-    params = {
-        "connection_id": connection["id"],
-        "from_datetime": datetime.now(timezone.utc).isoformat(),
-        "to_datetime": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
-    }
-
-    for _ in range(3):
-        resp = await client.get(
-            f"/v1/organizations/{org['id']}/contribution-export.csv",
-            params=params,
-            headers={"Authorization": f"Bearer {owner_token}"},
-        )
-        assert resp.status_code == 200, resp.text
-
-    resp = await client.get(
-        f"/v1/organizations/{org['id']}/contribution-export.csv",
-        params=params,
         headers={"Authorization": f"Bearer {owner_token}"},
     )
     assert resp.status_code == 402, resp.text
@@ -692,52 +614,9 @@ async def test_admin_price_change_notifies_plan_owners(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["monthly_price_cents"] == 900
+    assert resp.json()["plan"]["monthly_price_cents"] == 900
+    assert resp.json()["owners_notified"] == 1
     assert any("More included support." in entry.get("body", "") for entry in notifier.sent)
-
-
-async def test_yearly_subscription_applies_admin_savings_and_promotion(
-    client: AsyncClient, db_session: AsyncSession
-):
-    owner_token = await register_and_login(client, "owner-yearly@example.org")
-    await enable_mfa(client, owner_token)
-    org = await create_org(client, owner_token, "Yearly Org")
-    plan = (await db_session.execute(select(Plan).where(Plan.key == "growth"))).scalar_one()
-    plan.paypal_yearly_plan_id = "P-GROWTH-YEARLY"
-    db_session.add(BillingSettings(key="default", annual_savings_percent=10))
-    db_session.add(
-        BillingPromotion(
-            name="Launch",
-            percent_off=20,
-            starts_at=datetime.now(timezone.utc) - timedelta(days=1),
-            ends_at=datetime.now(timezone.utc) + timedelta(days=30),
-            plan_id=plan.id,
-            applies_to_existing=True,
-            applies_to_new=True,
-            is_active=True,
-        )
-    )
-    await db_session.commit()
-
-    fake_paypal = FakePayPalClient()
-    app.dependency_overrides[get_paypal_client] = lambda: fake_paypal
-    resp = await client.post(
-        f"/v1/organizations/{org['id']}/billing/paypal-subscription",
-        json={"plan_id": plan.id, "interval": "yearly"},
-        headers={"Authorization": f"Bearer {owner_token}"},
-    )
-    app.dependency_overrides.pop(get_paypal_client, None)
-
-    assert resp.status_code == 200, resp.text
-    sent = fake_paypal.subscriptions[0]
-    assert sent["plan_id"] == "P-GROWTH-YEARLY"
-    # Growth USD 7 * 12 = 84; 10% annual savings -> 75.60; 20% promo -> 60.48
-    # for the one yearly charge inside the promo window, then back to 75.60.
-    intro, regular = sent["billing_cycles"]
-    assert intro["pricing_scheme"]["fixed_price"]["value"] == "60.48"
-    assert intro["total_cycles"] == 1
-    assert regular["pricing_scheme"]["fixed_price"]["value"] == "75.60"
-    assert regular["total_cycles"] == 0
 
 
 async def _owner_with_org(client: AsyncClient, prefix: str):
@@ -745,41 +624,6 @@ async def _owner_with_org(client: AsyncClient, prefix: str):
     await enable_mfa(client, owner_token)
     org = await create_org(client, owner_token, f"{prefix} Org")
     return owner_token, org
-
-
-async def test_checkout_auto_creates_paypal_plans_when_unmapped(
-    client: AsyncClient, db_session: AsyncSession
-):
-    owner_token, org = await _owner_with_org(client, "autoplan")
-    plan = (await db_session.execute(select(Plan).where(Plan.key == "premium"))).scalar_one()
-    assert plan.paypal_monthly_plan_id is None
-
-    fake_paypal = FakePayPalClient()
-    app.dependency_overrides[get_paypal_client] = lambda: fake_paypal
-    try:
-        for _ in range(2):
-            resp = await client.post(
-                f"/v1/organizations/{org['id']}/billing/paypal-subscription",
-                json={"plan_id": plan.id},
-                headers={"Authorization": f"Bearer {owner_token}", "Origin": "https://letsgive.ca"},
-            )
-            assert resp.status_code == 200, resp.text
-    finally:
-        app.dependency_overrides.pop(get_paypal_client, None)
-
-    # PayPal returns the payer to the site they started from, never localhost.
-    assert fake_paypal.subscriptions[0]["return_url"] == "https://letsgive.ca/billing?paypal=approved"
-    assert fake_paypal.subscriptions[0]["cancel_url"] == "https://letsgive.ca/billing?paypal=canceled"
-    # One product and one monthly plan, reused by the second checkout.
-    assert len(fake_paypal.products) == 1
-    assert len(fake_paypal.plans) == 1
-    assert fake_paypal.plans[0]["interval"] == "monthly"
-    assert fake_paypal.plans[0]["price"] == Decimal("13.00")
-    await db_session.refresh(plan)
-    assert plan.paypal_monthly_plan_id == "P-AUTO-1"
-    # No promotion: a single intro cycle at the regular price.
-    intro, regular = fake_paypal.subscriptions[0]["billing_cycles"]
-    assert intro == {"sequence": 1, "total_cycles": 1, "pricing_scheme": regular["pricing_scheme"]}
 
 
 def test_promo_cycle_count_counts_charges_inside_window():
@@ -845,78 +689,6 @@ async def test_yearly_payment_webhook_sets_one_year_period(
     await db_session.refresh(subscription)
     days = (subscription.current_period_end - subscription.current_period_start).days
     assert 365 <= days <= 366
-
-
-async def test_existing_subscriber_can_approve_new_promotion_pricing(
-    client: AsyncClient, db_session: AsyncSession
-):
-    owner_token, org = await _owner_with_org(client, "revise")
-    plan = (await db_session.execute(select(Plan).where(Plan.key == "growth"))).scalar_one()
-    plan.paypal_monthly_plan_id = "P-GROWTH-MONTHLY"
-    now = datetime.now(timezone.utc)
-    subscription = BillingSubscription(
-        organization_id=org["id"],
-        plan_id=plan.id,
-        provider_subscription_id="I-REVISE",
-        status=BillingSubscriptionStatus.ACTIVE,
-        currency="USD",
-        amount=Decimal("7.00"),
-        regular_amount=Decimal("7.00"),
-        interval=BillingInterval.MONTHLY,
-        current_period_start=now,
-        current_period_end=now + timedelta(days=10),
-    )
-    db_session.add(subscription)
-    await db_session.commit()
-    headers = {"Authorization": f"Bearer {owner_token}"}
-
-    # No promotion yet: nothing to approve.
-    overview = await client.get(f"/v1/organizations/{org['id']}/billing", headers=headers)
-    assert overview.json()["pricing_update"] is None
-
-    db_session.add(
-        BillingPromotion(
-            name="Existing thanks",
-            percent_off=50,
-            starts_at=now - timedelta(days=1),
-            ends_at=now + timedelta(days=20),
-            applies_to_existing=True,
-            applies_to_new=False,
-            is_active=True,
-        )
-    )
-    await db_session.commit()
-
-    overview = await client.get(f"/v1/organizations/{org['id']}/billing", headers=headers)
-    update = overview.json()["pricing_update"]
-    assert Decimal(update["intro_amount"]) == Decimal("3.50")
-    assert update["intro_cycles"] == 1
-
-    fake_paypal = FakePayPalClient()
-    app.dependency_overrides[get_paypal_client] = lambda: fake_paypal
-    try:
-        resp = await client.post(
-            f"/v1/organizations/{org['id']}/billing/paypal-subscription/revise", headers=headers
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["approval_url"] == "https://paypal.test/revise"
-        assert fake_paypal.revisions[0]["id"] == "I-REVISE"
-
-        fake_paypal.subscription_details = {
-            "plan": {"billing_cycles": fake_paypal.revisions[0]["billing_cycles"]}
-        }
-        resp = await client.post(
-            f"/v1/organizations/{org['id']}/billing/paypal-subscription/revise/confirm",
-            headers=headers,
-        )
-        assert resp.status_code == 200, resp.text
-    finally:
-        app.dependency_overrides.pop(get_paypal_client, None)
-
-    body = resp.json()
-    assert Decimal(body["subscription"]["amount"]) == Decimal("3.50")
-    assert Decimal(body["subscription"]["regular_amount"]) == Decimal("7.00")
-    assert body["pricing_update"] is None
 
 
 async def test_admin_can_deactivate_promotion(client: AsyncClient, db_session: AsyncSession):

@@ -5,8 +5,14 @@ import type {
   AdminSupportTicket,
   AdminSupportTicketDetail,
   AuditLogEntry,
+  AdminPaymentSettings,
+  AdminStripeTest,
   BillingInterval,
   BillingOverview,
+  CheckoutResult,
+  ContributionExportPreview,
+  CreditKind,
+  PlanPricingUpdateResult,
   BillingPricing,
   BillingPromotion,
   BillingRefund,
@@ -38,7 +44,6 @@ import type {
   SessionOperator,
   SessionReport,
   SessionStatus,
-  StartPayPalSubscriptionResponse,
   SubscriptionStatus,
   SupportTicket,
   SupportTicketDetail,
@@ -128,17 +133,23 @@ export const billingApi = {
 
   pricing: (orgId: string) => api.get<BillingPricing>(`/v1/organizations/${orgId}/billing/pricing`),
 
-  startPayPalSubscription: (orgId: string, planId: string, interval: BillingInterval) =>
-    api.post<StartPayPalSubscriptionResponse>(
-      `/v1/organizations/${orgId}/billing/paypal-subscription`,
-      { plan_id: planId, interval }
-    ),
+  checkout: (orgId: string, planId: string, interval: BillingInterval) =>
+    api.post<CheckoutResult>(`/v1/organizations/${orgId}/billing/checkout`, { plan_id: planId, interval }),
 
-  revisePayPalSubscription: (orgId: string) =>
-    api.post<{ approval_url: string }>(`/v1/organizations/${orgId}/billing/paypal-subscription/revise`),
+  confirmCheckout: (orgId: string, sessionId: string) =>
+    api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/checkout/confirm`, { session_id: sessionId }),
 
-  confirmPayPalRevision: (orgId: string) =>
-    api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/paypal-subscription/revise/confirm`),
+  cancelAutoRenew: (orgId: string) => api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/cancel`),
+
+  resumeAutoRenew: (orgId: string) => api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/resume`),
+
+  openPortal: (orgId: string) => api.post<{ url: string }>(`/v1/organizations/${orgId}/billing/portal`),
+
+  buyTopUp: (orgId: string, kind: CreditKind, quantity: number) =>
+    api.post<{ url: string }>(`/v1/organizations/${orgId}/billing/topups`, { kind, quantity }),
+
+  applyPromotion: (orgId: string) =>
+    api.post<BillingOverview>(`/v1/organizations/${orgId}/billing/apply-promotion`),
 };
 
 export const notificationApi = {
@@ -355,6 +366,24 @@ export const reportApi = {
       }`
     ),
 
+  previewContributionExport: (orgId: string, params: {
+    connection_id: string;
+    from_datetime: string;
+    to_datetime: string;
+    keywords?: string;
+    template_id?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    qs.set("connection_id", params.connection_id);
+    qs.set("from_datetime", params.from_datetime);
+    qs.set("to_datetime", params.to_datetime);
+    if (params.keywords) qs.set("keywords", params.keywords);
+    if (params.template_id) qs.set("template_id", params.template_id);
+    return api.get<ContributionExportPreview>(
+      `/v1/organizations/${orgId}/contribution-export/preview?${qs.toString()}`
+    );
+  },
+
   contributionExportUrl: (orgId: string, params: {
     connection_id: string;
     from_datetime: string;
@@ -471,7 +500,7 @@ export const adminApi = {
     }),
 
   updatePlanPrice: (planId: string, monthlyPriceCents: number, reason: string) =>
-    api.post<Plan>(`/v1/admin/plans/${planId}/pricing`, {
+    api.post<PlanPricingUpdateResult>(`/v1/admin/plans/${planId}/pricing`, {
       monthly_price_cents: monthlyPriceCents,
       reason,
     }),
@@ -484,10 +513,28 @@ export const adminApi = {
   setPromotionActive: (promotionId: string, isActive: boolean) =>
     api.patch<BillingPromotion>(`/v1/admin/promotions/${promotionId}`, { is_active: isActive }),
 
+  getPaymentSettings: () => api.get<AdminPaymentSettings>("/v1/admin/payment-settings"),
+
+  updatePaymentSettings: (payload: {
+    stripe_secret_key?: string;
+    stripe_webhook_secret?: string;
+    session_topup_price_cents?: number;
+    export_topup_price_cents?: number;
+  }) => api.post<AdminPaymentSettings>("/v1/admin/payment-settings", payload),
+
+  testStripe: () => api.post<AdminStripeTest>("/v1/admin/payment-settings/test"),
+
+  grantCredits: (orgId: string, sessionCredits: number, exportCredits: number, reason: string) =>
+    api.post<AdminOrganizationDetail>(`/v1/admin/organizations/${orgId}/credits`, {
+      session_credits: sessionCredits,
+      export_credits: exportCredits,
+      reason,
+    }),
+
   getBillingSettings: () => api.get<{ annual_savings_percent: number }>("/v1/admin/billing-settings"),
 
   updateBillingSettings: (annualSavingsPercent: number) =>
-    api.post<{ annual_savings_percent: number }>("/v1/admin/billing-settings", {
+    api.post<{ annual_savings_percent: number; subscriptions_updated: number; subscriptions_failed: number }>("/v1/admin/billing-settings", {
       annual_savings_percent: annualSavingsPercent,
     }),
 

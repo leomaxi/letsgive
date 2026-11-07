@@ -21,6 +21,205 @@ function promotionState(promotion: BillingPromotion): { label: string; tone: "gr
   return { label: "running", tone: "green" };
 }
 
+const WEBHOOK_EVENTS = [
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.paid",
+  "invoice.payment_failed",
+];
+
+function StripeSettingsCard() {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ["admin-payment-settings"], queryFn: adminApi.getPaymentSettings });
+  const [secretKey, setSecretKey] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [sessionPrice, setSessionPrice] = useState("");
+  const [exportPrice, setExportPrice] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const webhookUrl = `${window.location.origin}/v1/stripe/webhook`;
+
+  const saveMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof adminApi.updatePaymentSettings>[0]) =>
+      adminApi.updatePaymentSettings(payload),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["admin-payment-settings"], data);
+      setSecretKey("");
+      setWebhookSecret("");
+      setSessionPrice("");
+      setExportPrice("");
+      setError(null);
+      setMessage("Saved.");
+    },
+    onError: (err) => {
+      setMessage(null);
+      setError(err instanceof ApiError ? err.message : "Could not save.");
+    },
+  });
+
+  const testMutation = useMutation({
+    mutationFn: adminApi.testStripe,
+    onSuccess: (result) => {
+      if (result.ok) {
+        setError(null);
+        setMessage(
+          `Connected to ${result.account_name ?? "your Stripe account"} (${result.mode} mode)` +
+            (result.charges_enabled === false ? " — but this account can't take payments yet; finish Stripe's onboarding." : ".")
+        );
+      } else {
+        setMessage(null);
+        setError(result.message ?? "Stripe connection failed.");
+      }
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : "Could not test the connection."),
+  });
+
+  const settings = settingsQuery.data;
+  const toCents = (value: string) => Math.round(Number(value) * 100);
+  const priceValid = (value: string) => value === "" || (Number.isFinite(Number(value)) && Number(value) >= 0);
+
+  function saveKeys() {
+    const payload: Parameters<typeof adminApi.updatePaymentSettings>[0] = {};
+    if (secretKey.trim()) payload.stripe_secret_key = secretKey.trim();
+    if (webhookSecret.trim()) payload.stripe_webhook_secret = webhookSecret.trim();
+    saveMutation.mutate(payload);
+  }
+
+  function savePrices() {
+    const payload: Parameters<typeof adminApi.updatePaymentSettings>[0] = {};
+    if (sessionPrice !== "") payload.session_topup_price_cents = toCents(sessionPrice);
+    if (exportPrice !== "") payload.export_topup_price_cents = toCents(exportPrice);
+    saveMutation.mutate(payload);
+  }
+
+  return (
+    <Card>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Stripe payments
+        </h2>
+        {settings &&
+          (settings.stripe_configured ? (
+            <Badge tone={settings.stripe_mode === "live" ? "green" : "amber"}>
+              {settings.stripe_mode === "live" ? "Live" : "Test mode"} · key …{settings.stripe_key_last4}
+            </Badge>
+          ) : (
+            <Badge tone="red">Not set up — customers can't pay</Badge>
+          ))}
+      </div>
+      <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">
+        All subscriptions and top-ups are paid through Stripe. Keys are stored encrypted and are never shown
+        again after saving — paste a new one to replace it. Use test keys (sk_test_…) to try things out first.
+      </p>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Secret key (sk_… or restricted rk_…)" htmlFor="stripeSecret">
+          <Input
+            id="stripeSecret"
+            type="password"
+            autoComplete="off"
+            placeholder={settings?.stripe_configured ? `Saved — ends in ${settings.stripe_key_last4}` : "sk_live_…"}
+            value={secretKey}
+            onChange={(e) => setSecretKey(e.target.value)}
+          />
+        </Field>
+        <Field label="Webhook signing secret (whsec_…)" htmlFor="stripeWebhook">
+          <Input
+            id="stripeWebhook"
+            type="password"
+            autoComplete="off"
+            placeholder={settings?.webhook_configured ? "Saved" : "whsec_…"}
+            value={webhookSecret}
+            onChange={(e) => setWebhookSecret(e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button disabled={(!secretKey.trim() && !webhookSecret.trim()) || saveMutation.isPending} onClick={saveKeys}>
+          {saveMutation.isPending ? "Saving…" : "Save keys"}
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={!settings?.stripe_configured || testMutation.isPending}
+          onClick={() => testMutation.mutate()}
+        >
+          {testMutation.isPending ? "Testing…" : "Test connection"}
+        </Button>
+      </div>
+
+      <details className="mt-4 rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+        <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300">
+          Webhook setup (needed so renewals and failed payments update automatically)
+        </summary>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-600 dark:text-slate-300">
+          <li>In Stripe, open Developers → Webhooks → Add endpoint.</li>
+          <li>
+            Endpoint URL:{" "}
+            <code className="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-800">{webhookUrl}</code>
+          </li>
+          <li>
+            Select these events:{" "}
+            <span className="text-xs text-slate-500 dark:text-slate-400">{WEBHOOK_EVENTS.join(", ")}</span>
+          </li>
+          <li>Copy the endpoint's signing secret (whsec_…) into the field above.</li>
+          <li>In Settings → Billing → Customer portal, turn the portal on so customers can update their card.</li>
+        </ol>
+      </details>
+
+      <div className="mt-6 border-t border-slate-100 pt-4 dark:border-slate-700">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Top-up prices</h3>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          What an organization pays for one extra session or export after using its monthly allowance. Extras never
+          expire. Set to 0 to stop selling that extra.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Per extra session (USD)" htmlFor="sessionTopup">
+            <Input
+              id="sessionTopup"
+              type="number"
+              min={0}
+              step="0.01"
+              className="w-40"
+              placeholder={settings ? (settings.session_topup_price_cents / 100).toFixed(2) : ""}
+              value={sessionPrice}
+              onChange={(e) => setSessionPrice(e.target.value)}
+            />
+          </Field>
+          <Field label="Per extra export (USD)" htmlFor="exportTopup">
+            <Input
+              id="exportTopup"
+              type="number"
+              min={0}
+              step="0.01"
+              className="w-40"
+              placeholder={settings ? (settings.export_topup_price_cents / 100).toFixed(2) : ""}
+              value={exportPrice}
+              onChange={(e) => setExportPrice(e.target.value)}
+            />
+          </Field>
+          <Button
+            variant="secondary"
+            disabled={
+              (sessionPrice === "" && exportPrice === "") ||
+              !priceValid(sessionPrice) ||
+              !priceValid(exportPrice) ||
+              saveMutation.isPending
+            }
+            onClick={savePrices}
+          >
+            Save prices
+          </Button>
+        </div>
+      </div>
+      {message && <p className="mt-3 text-sm text-green-600 dark:text-green-400">{message}</p>}
+      <ErrorText>{error}</ErrorText>
+    </Card>
+  );
+}
+
 function PlanPriceRow({ plan, annualSavingsPercent }: { plan: Plan; annualSavingsPercent: number }) {
   const queryClient = useQueryClient();
   const [price, setPrice] = useState("");
@@ -38,7 +237,14 @@ function PlanPriceRow({ plan, annualSavingsPercent }: { plan: Plan; annualSaving
       setPrice("");
       setReason("");
       setError(null);
-      setMessage(`Price set to ${formatUsd(updated.monthly_price_cents)} / month. Owners on this plan were emailed.`);
+      setMessage(
+        `Price set to ${formatUsd(updated.plan.monthly_price_cents)} / month. ${updated.owners_notified} owner(s) emailed` +
+          (updated.subscriptions_updated || updated.subscriptions_failed
+            ? `; ${updated.subscriptions_updated} subscription(s) move to the new price at their next renewal` +
+              (updated.subscriptions_failed ? ` (${updated.subscriptions_failed} failed — see the audit log)` : "")
+            : "") +
+          "."
+      );
       queryClient.invalidateQueries({ queryKey: ["plans"] });
     },
     onError: (err) => {
@@ -123,7 +329,7 @@ function AnnualSavingsCard() {
         <span className="font-semibold">
           {settingsQuery.data ? `${settingsQuery.data.annual_savings_percent}%` : "…"}
         </span>
-        . Existing yearly subscribers are asked to approve the new price on their Billing page.
+        . Existing yearly subscribers move to the new price at their next renewal.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Yearly saving (%)" htmlFor="annualSavings">
@@ -210,8 +416,8 @@ function PromotionsCard({ plans }: { plans: Plan[] }) {
       <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">
         Every payment that falls between the start and end dates is charged at the discounted price;
         billing returns to the normal price automatically afterwards. New subscribers get it at checkout;
-        existing subscribers approve it once from their Billing page (PayPal requires their consent). If
-        several promotions overlap, the largest discount wins.
+        existing subscribers see a one-click "Claim offer" on their Billing page. If several promotions
+        overlap, the largest discount wins.
       </p>
 
       <div className="space-y-3">
@@ -325,7 +531,9 @@ export default function AdminPricingPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Pricing</h1>
+      <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Pricing &amp; payments</h1>
+
+      <StripeSettingsCard />
 
       <Card>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
@@ -333,8 +541,8 @@ export default function AdminPricingPage() {
         </h2>
         <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">
           New checkouts use the new price immediately. Every active owner on the plan is emailed the
-          change with your reason. Existing PayPal subscribers keep their current price until they
-          approve the new one from their Billing page.
+          change with your reason, and existing subscribers move to the new price from their next
+          renewal (nothing is charged early).
         </p>
         <div className="space-y-5">
           {plans.map((plan) => (

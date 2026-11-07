@@ -65,6 +65,12 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     discount_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bonus_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bonus_sessions_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Purchased top-ups. Unlike the plan's monthly allowance (and admin bonus
+    # sessions) these never expire; one is used only once the month's
+    # allowance is exhausted.
+    session_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    export_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         SAEnum(

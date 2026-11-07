@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useOrg } from "@/auth/OrgContext";
 import { ApiError, getToken } from "@/lib/api";
 import { connectionApi, reportApi } from "@/lib/endpoints";
-import type { ApiErrorBody, ContributionExportField } from "@/lib/types";
+import type { ApiErrorBody, ContributionExportField, ContributionExportPreview } from "@/lib/types";
 import { Badge, Button, Card, EmptyState, ErrorText, Field, Input, PageHeader, Select, Spinner } from "@/components/ui";
 
 const DEFAULT_FIELD_KEYS = ["sender_name", "received_at", "amount", "message", "reference_number"];
@@ -75,6 +76,15 @@ export default function ContributionExportPage() {
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ContributionExportPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+
+  // A preview only describes the exact filters it was run with.
+  useEffect(() => {
+    setPreview(null);
+    setPreviewError(null);
+  }, [selectedConnectionId, fromDateTime, toDateTime, keywords, selectedTemplateId]);
 
   const canUse = activeOrg?.role === "owner" || activeOrg?.role === "finance";
 
@@ -141,6 +151,30 @@ export default function ContributionExportPage() {
     );
   }
 
+  function exportParams() {
+    return {
+      connection_id: selectedConnectionId,
+      from_datetime: toIsoFromLocal(fromDateTime),
+      to_datetime: toIsoFromLocal(toDateTime),
+      keywords: keywords.trim() || undefined,
+      template_id: selectedTemplateId || undefined,
+    };
+  }
+
+  async function onPreview() {
+    if (!activeOrg || !selectedConnectionId) return;
+    setIsPreviewing(true);
+    setPreviewError(null);
+    try {
+      setPreview(await reportApi.previewContributionExport(activeOrg.id, exportParams()));
+    } catch (err) {
+      setPreview(null);
+      setPreviewError(err instanceof ApiError ? err.message : "Could not check that range.");
+    } finally {
+      setIsPreviewing(false);
+    }
+  }
+
   async function onExport() {
     if (!activeOrg) return;
     if (isDownloading) return;
@@ -162,13 +196,7 @@ export default function ContributionExportPage() {
 
     try {
       await downloadCsv(
-        reportApi.contributionExportUrl(activeOrg.id, {
-          connection_id: selectedConnectionId,
-          from_datetime: toIsoFromLocal(fromDateTime),
-          to_datetime: toIsoFromLocal(toDateTime),
-          keywords: keywords.trim() || undefined,
-          template_id: selectedTemplateId || undefined,
-        }),
+        reportApi.contributionExportUrl(activeOrg.id, exportParams()),
         "contribution-export.csv",
         setDownloadError,
         setDownloadProgress,
@@ -176,6 +204,7 @@ export default function ContributionExportPage() {
     } finally {
       window.clearInterval(progressTimer);
       setIsDownloading(false);
+      queryClient.invalidateQueries({ queryKey: ["billing-overview", activeOrg.id] });
       window.setTimeout(() => {
         setDownloadProgress((current) => (current === 100 ? null : current));
       }, 1200);
@@ -251,6 +280,70 @@ export default function ContributionExportPage() {
                 ))}
               </Select>
             </Field>
+            <ErrorText>{previewError}</ErrorText>
+            {preview && (
+              <div className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700" role="status">
+                {preview.row_count === 0 ? (
+                  <p className="text-slate-600 dark:text-slate-300">
+                    No matching transactions in this range. Try a wider date range or fewer keywords — nothing has been
+                    used.
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-medium text-slate-800 dark:text-slate-200">
+                      {preview.row_count} transaction{preview.row_count === 1 ? "" : "s"} · total{" "}
+                      {Number(preview.total_amount).toFixed(2)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {preview.exports_remaining_included === null
+                        ? "Your plan includes unlimited exports."
+                        : preview.exports_remaining_included > 0
+                          ? `Downloading uses 1 of ${preview.exports_remaining_included} export${preview.exports_remaining_included === 1 ? "" : "s"} left this month.`
+                          : preview.export_credits > 0
+                            ? `Downloading uses 1 of your ${preview.export_credits} extra export${preview.export_credits === 1 ? "" : "s"}.`
+                            : null}
+                      {preview.exports_remaining_included === 0 && preview.export_credits === 0 && (
+                        <>
+                          No exports left this month.{" "}
+                          <Link to="/billing" className="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400">
+                            Buy extra exports
+                          </Link>
+                        </>
+                      )}
+                    </p>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-left text-xs">
+                        <thead>
+                          <tr className="text-slate-500 dark:text-slate-400">
+                            {preview.columns.map((column) => (
+                              <th key={column} className="whitespace-nowrap px-2 py-1 font-medium">
+                                {column}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                          {preview.sample_rows.map((row, index) => (
+                            <tr key={index} className="text-slate-700 dark:text-slate-300">
+                              {row.map((cell, cellIndex) => (
+                                <td key={cellIndex} className="max-w-[14rem] truncate px-2 py-1" title={cell}>
+                                  {cell}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {preview.row_count > preview.sample_rows.length && (
+                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                          Showing the first {preview.sample_rows.length} of {preview.row_count}.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <ErrorText>{downloadError}</ErrorText>
             {downloadProgress !== null && (
               <div className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
@@ -266,12 +359,30 @@ export default function ContributionExportPage() {
                 </div>
               </div>
             )}
-            <Button
-              onClick={onExport}
-              disabled={isDownloading || !selectedConnectionId || !fromDateTime || !toDateTime}
-            >
-              {isDownloading ? `Preparing ${downloadProgress ?? 0}%` : "Download CSV"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={onPreview}
+                disabled={isPreviewing || isDownloading || !selectedConnectionId || !fromDateTime || !toDateTime}
+              >
+                {isPreviewing ? "Checking…" : "Check what's in range (free)"}
+              </Button>
+              <Button
+                onClick={onExport}
+                disabled={
+                  isDownloading ||
+                  !selectedConnectionId ||
+                  !fromDateTime ||
+                  !toDateTime ||
+                  preview?.row_count === 0
+                }
+              >
+                {isDownloading ? `Preparing ${downloadProgress ?? 0}%` : "Download CSV"}
+              </Button>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              An export only counts toward your allowance when it actually contains transactions.
+            </p>
           </div>
         </Card>
 

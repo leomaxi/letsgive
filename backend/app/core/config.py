@@ -62,13 +62,10 @@ class Settings(BaseSettings):
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
     paypal_webhook_id: str = ""
-    # Where PayPal sends the payer back to. Leave blank (recommended) to use
-    # the site the checkout was started from, e.g. https://letsgive.ca/billing.
-    # A hardcoded localhost default here once sent production payers back to
-    # http://localhost:5173 after PayPal. Set only if the public site URL
-    # differs from what browsers send as their Origin.
-    paypal_return_url: str = ""
-    paypal_cancel_url: str = ""
+    # Public base URL of the web app (e.g. https://letsgive.ca), used for
+    # Stripe's return links. Leave blank to use the site the request came
+    # from, which is right for a normal single-domain deployment.
+    public_app_url: str = ""
 
 
 @lru_cache

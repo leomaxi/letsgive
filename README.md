@@ -367,10 +367,17 @@ python -m pytest
 - `SessionPublicOut`'s `currency` field is always the session's configured currency, independent of
   whether an amount is actually visible — harmless (currency alone isn't sensitive), but worth
   knowing if a future field audit assumes every field toggles with `amount_visible`.
-- No real payment provider — "billing" here is plans, entitlement enforcement, and cancellation,
-  not actual invoicing or payment collection (spec §13's "invoices" line item). Needs a Stripe-like
-  integration with live credentials this environment doesn't have, following the same
-  provider-behind-a-protocol pattern as `Notifier` and `MailboxProvider`.
+- Billing (Let's Give's own subscription fee — never donor money) runs on **Stripe**: hosted
+  Checkout for new monthly/yearly subscriptions (both auto-renew), in-place plan/interval changes
+  with proration, cancel-at-period-end (the org then drops to the free Starter plan rather than
+  being locked out), the Stripe customer portal for cards and invoices, and one-off top-ups of
+  extra sessions/exports that never expire and are spent only after the monthly allowance
+  (`app/domain/stripe_billing.py`, `app/domain/billing.py`). The Stripe secret key and webhook
+  signing secret are entered by a platform admin under Admin → Pricing & payments and stored
+  encrypted. Webhook endpoint: `POST /v1/stripe/webhook`; the events to subscribe are listed in
+  `app/api/v1/stripe_webhook.py` and on the admin page. Returning from Checkout also applies the
+  result directly (read back from Stripe), so a late webhook never leaves a paid org on the old
+  plan. PayPal remains only as a legacy webhook for any pre-existing PayPal subscription.
 - *(Historical note, resolved)* This paragraph originally said `grace_period_ends_at` was recorded
   on cancellation but not enforced, so reports stayed readable indefinitely. Now enforced:
   `assert_reports_readable` (`app/domain/billing.py`) blocks both the JSON report and the CSV export

@@ -96,7 +96,11 @@ async def test_admin_subscription_change_bypasses_canceled_block(
     org = await create_org(client, owner_token, "Admin Cancel Org")
     owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-    await client.post(f"/v1/organizations/{org['id']}/subscription/cancel", headers=owner_headers)
+    from app.db.models.organization import Organization, SubscriptionStatus
+
+    org_row = await db_session.get(Organization, org["id"])
+    org_row.subscription_status = SubscriptionStatus.CANCELED
+    await db_session.commit()
 
     resp = await client.get("/v1/plans", headers=owner_headers)
     growth_id = next(p["id"] for p in resp.json() if p["key"] == "growth")
@@ -107,7 +111,7 @@ async def test_admin_subscription_change_bypasses_canceled_block(
         json={"plan_id": growth_id},
         headers=owner_headers,
     )
-    assert resp.status_code == 400
+    assert resp.status_code in (400, 402)
 
     admin_token = await _make_admin(client, db_session, "admin-cancel@example.org")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}

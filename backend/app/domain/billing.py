@@ -1,13 +1,16 @@
 from datetime import datetime, timezone
 
+from dataclasses import dataclass
+
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.display_template import DisplayTemplate
 from app.db.models.export_usage import ExportUsage
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
-from app.db.models.membership import Membership, MembershipStatus
+from app.db.models.membership import Membership, MembershipStatus, Role
+from app.db.models.notification import NotificationType
 from app.db.models.organization import Organization, SubscriptionStatus
 from app.db.models.plan import Plan
 from app.db.models.session import Session
@@ -51,10 +54,128 @@ def assert_reports_readable(org: Organization) -> None:
         )
 
 
+def _month_start(now: datetime) -> datetime:
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_month_start(now: datetime) -> datetime:
+    start = _month_start(now)
+    return start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+
+
+def active_bonus_sessions(org: Organization, now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    if (
+        org.bonus_sessions > 0
+        and org.bonus_sessions_expires_at is not None
+        and org.bonus_sessions_expires_at > now
+    ):
+        return org.bonus_sessions
+    return 0
+
+
+async def sessions_used_this_month(db: AsyncSession, org: Organization, now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    result = await db.execute(
+        select(func.count(Session.id)).where(
+            Session.organization_id == org.id, Session.created_at >= _month_start(now)
+        )
+    )
+    return result.scalar_one()
+
+
+async def exports_used_this_month(db: AsyncSession, org: Organization, now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    result = await db.execute(
+        select(ExportUsage.count).where(
+            ExportUsage.organization_id == org.id, ExportUsage.month == now.strftime("%Y-%m")
+        )
+    )
+    return result.scalar_one_or_none() or 0
+
+
+@dataclass
+class UsageSummary:
+    sessions_used: int
+    sessions_included: int | None  # plan allowance + active bonus; None = no plan limit
+    session_credits: int
+    exports_used: int
+    exports_included: int | None  # None = unlimited
+    export_credits: int
+    resets_at: datetime
+
+
+async def usage_summary(db: AsyncSession, org: Organization) -> UsageSummary:
+    now = datetime.now(timezone.utc)
+    plan = await get_org_plan(db, org)
+    return UsageSummary(
+        sessions_used=await sessions_used_this_month(db, org, now),
+        sessions_included=(plan.max_sessions_per_month + active_bonus_sessions(org, now)) if plan else None,
+        session_credits=org.session_credits,
+        exports_used=await exports_used_this_month(db, org, now),
+        exports_included=plan.max_exports_per_month if plan else 0,
+        export_credits=org.export_credits,
+        resets_at=_next_month_start(now),
+    )
+
+
+async def _take_credit(db: AsyncSession, org: Organization, attribute: str) -> bool:
+    """Atomically uses one purchased credit. A conditional UPDATE rather
+    than read-modify-write, so two simultaneous requests can never spend the
+    same last credit."""
+    column = getattr(Organization, attribute)
+    result = await db.execute(
+        update(Organization)
+        .where(Organization.id == org.id, column > 0)
+        .values({attribute: column - 1})
+        .execution_options(synchronize_session=False)
+    )
+    if not result.rowcount:
+        return False
+    await db.refresh(org, attribute_names=[attribute])
+    return True
+
+
+async def _notify_billing_contacts(db: AsyncSession, org: Organization, *, title: str, body: str) -> None:
+    """In-app notice to Owners and Finance, plus an email to Owners."""
+    from app.domain.inbox import notify_user
+    from app.domain.notifications import get_notifier
+    from app.db.models.user import User
+
+    rows = await db.execute(
+        select(User, Membership.role)
+        .join(Membership, Membership.user_id == User.id)
+        .where(
+            Membership.organization_id == org.id,
+            Membership.status == MembershipStatus.ACTIVE,
+            Membership.role.in_([Role.OWNER, Role.FINANCE]),
+        )
+    )
+    for user, role in rows.all():
+        await notify_user(
+            db,
+            user_id=user.id,
+            organization_id=org.id,
+            type=NotificationType.BILLING_NOTICE,
+            title=title,
+            body=body,
+        )
+        if role == Role.OWNER:
+            try:
+                await get_notifier().send_billing_notice(
+                    to_email=user.email, subject=f"Let's Give: {title}", body=body
+                )
+            except Exception:  # noqa: BLE001 -- a mail hiccup must not block the action
+                pass
+
+
 async def assert_can_create_session(db: AsyncSession, org: Organization) -> None:
     """Server-side entitlement check (spec 13) -- a plan's monthly session
     quota isn't just displayed in a UI somewhere, it's actually enforced
-    here before the row is created.
+    here before the row is created. Once the month's allowance (plan + any
+    admin bonus) is used up, a purchased session credit is spent instead;
+    credits never expire. Must be called inside the same transaction that
+    creates the session, so a failed create rolls the credit back too.
     """
     assert_subscription_active(org)
     if org.plan_id is None:
@@ -63,30 +184,42 @@ async def assert_can_create_session(db: AsyncSession, org: Organization) -> None
     if plan is None:
         return
 
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    result = await db.execute(
-        select(func.count(Session.id)).where(
-            Session.organization_id == org.id, Session.created_at >= month_start
-        )
+    count = await sessions_used_this_month(db, org)
+    allowed_sessions = plan.max_sessions_per_month + active_bonus_sessions(org)
+    if count < allowed_sessions:
+        if count + 1 == allowed_sessions and org.session_credits == 0:
+            await _notify_billing_contacts(
+                db,
+                org,
+                title="Last included session this month",
+                body=(
+                    f"You've now used all {allowed_sessions} sessions included in your "
+                    f"{plan.name} plan this month. To run more before the month resets, buy "
+                    "extra sessions (they never expire) or upgrade on the Billing page."
+                ),
+            )
+        return
+
+    if await _take_credit(db, org, "session_credits"):
+        if org.session_credits == 0:
+            await _notify_billing_contacts(
+                db,
+                org,
+                title="Last extra session used",
+                body=(
+                    "You've used your last purchased extra session. Buy more on the "
+                    "Billing page if you need more sessions this month."
+                ),
+            )
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail=(
+            f"You've used all {allowed_sessions} sessions included in the '{plan.name}' plan "
+            "this month. Buy extra sessions (they never expire) or upgrade on the Billing page."
+        ),
     )
-    count = result.scalar_one()
-    bonus_sessions = 0
-    if (
-        org.bonus_sessions > 0
-        and org.bonus_sessions_expires_at is not None
-        and org.bonus_sessions_expires_at > now
-    ):
-        bonus_sessions = org.bonus_sessions
-    allowed_sessions = plan.max_sessions_per_month + bonus_sessions
-    if count >= allowed_sessions:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                f"Monthly session limit reached for the '{plan.name}' plan "
-                f"({allowed_sessions}/month). Upgrade to create more."
-            ),
-        )
 
 
 async def assert_can_create_connection(db: AsyncSession, org: Organization) -> None:
@@ -192,36 +325,64 @@ async def assert_session_mailbox_limit(
         )
 
 
-async def consume_export_quota(db: AsyncSession, org: Organization) -> tuple[int, int | None]:
+async def assert_can_export(db: AsyncSession, org: Organization) -> None:
+    """Cheap pre-check before an export does slow mailbox work: is there an
+    included export or a purchased export credit left? Doesn't use one --
+    see consume_export_quota, which runs only once the export has rows."""
     plan = await get_org_plan(db, org)
-    if plan is None or plan.max_exports_per_month == 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Your current plan does not include transaction exports. Upgrade to export records.",
+    if plan is not None and plan.max_exports_per_month is None:
+        return
+    included = plan.max_exports_per_month if plan else 0
+    if await exports_used_this_month(db, org) < included or org.export_credits > 0:
+        return
+    if included == 0:
+        detail = (
+            "Your plan doesn't include transaction exports. Buy export credits or "
+            "upgrade on the Billing page."
         )
-    if plan.max_exports_per_month is None:
-        return 0, None
+    else:
+        detail = (
+            f"You've used all {included} exports included in the '{plan.name}' plan this "
+            "month. Buy extra exports (they never expire) or upgrade on the Billing page."
+        )
+    raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=detail)
 
-    now = datetime.now(timezone.utc)
-    month = now.strftime("%Y-%m")
+
+async def consume_export_quota(db: AsyncSession, org: Organization) -> str:
+    """Uses one export: from the month's allowance first, then a purchased
+    credit. Returns "included", "credit" or "unlimited". Callers must only
+    call this for an export that actually produced rows -- an empty export
+    must never cost the organization anything."""
+    plan = await get_org_plan(db, org)
+    if plan is not None and plan.max_exports_per_month is None:
+        return "unlimited"
+    included = plan.max_exports_per_month if plan else 0
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
     result = await db.execute(
-        select(ExportUsage).where(
-            ExportUsage.organization_id == org.id,
-            ExportUsage.month == month,
-        )
+        select(ExportUsage).where(ExportUsage.organization_id == org.id, ExportUsage.month == month)
     )
     usage = result.scalar_one_or_none()
     if usage is None:
         usage = ExportUsage(organization_id=org.id, month=month, count=0)
         db.add(usage)
         await db.flush()
-    if usage.count >= plan.max_exports_per_month:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                f"Monthly export limit reached for the '{plan.name}' plan "
-                f"({plan.max_exports_per_month}/month). Upgrade or wait until next month."
-            ),
-        )
-    usage.count += 1
-    return usage.count, plan.max_exports_per_month
+
+    if usage.count < included:
+        usage.count += 1
+        if usage.count == included and org.export_credits == 0:
+            await _notify_billing_contacts(
+                db,
+                org,
+                title="Last included export this month",
+                body=(
+                    f"You've used all {included} exports included in your plan this month. "
+                    "Buy extra exports (they never expire) or upgrade on the Billing page."
+                ),
+            )
+        return "included"
+
+    if await _take_credit(db, org, "export_credits"):
+        return "credit"
+    await assert_can_export(db, org)  # raises the right 402 message
+    raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="No exports left.")

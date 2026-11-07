@@ -40,6 +40,8 @@ export interface Organization {
   discount_percent: number;
   bonus_sessions: number;
   bonus_sessions_expires_at: string | null;
+  session_credits: number;
+  export_credits: number;
 }
 
 export interface MyOrganization extends Organization {
@@ -114,10 +116,22 @@ export interface Plan {
   max_session_mailbox_connections: number | null;
 }
 
-export interface StartPayPalSubscriptionResponse {
-  billing_subscription_id: string;
-  paypal_subscription_id: string;
-  approval_url: string;
+export interface CheckoutResult {
+  action: "redirect" | "updated";
+  url: string | null;
+  overview: BillingOverview | null;
+}
+
+export type CreditKind = "sessions" | "exports";
+
+export interface BillingUsage {
+  sessions_used: number;
+  sessions_included: number | null;
+  session_credits: number;
+  exports_used: number;
+  exports_included: number | null;
+  export_credits: number;
+  resets_at: string;
 }
 
 export interface BillingSubscription {
@@ -136,6 +150,8 @@ export interface BillingSubscription {
   current_period_start: string | null;
   current_period_end: string | null;
   canceled_at: string | null;
+  cancel_at_period_end: boolean;
+  provider: string;
   created_at: string;
 }
 
@@ -189,6 +205,9 @@ export interface BillingPayment {
   status: string;
   period_start: string | null;
   period_end: string | null;
+  kind: string;
+  description: string | null;
+  receipt_url: string | null;
   created_at: string;
 }
 
@@ -212,7 +231,44 @@ export interface BillingOverview {
   refunds: BillingRefund[];
   refundable_amount: string;
   refundable_payment_id: string | null;
-  pricing_update: PlanPriceQuote | null;
+  usage: BillingUsage;
+  payments_enabled: boolean;
+  session_topup_price_cents: number;
+  export_topup_price_cents: number;
+  available_promotion: PlanPriceQuote | null;
+}
+
+export interface ContributionExportPreview {
+  row_count: number;
+  total_amount: string;
+  columns: string[];
+  sample_rows: string[][];
+  exports_remaining_included: number | null;
+  export_credits: number;
+}
+
+export interface AdminPaymentSettings {
+  stripe_configured: boolean;
+  stripe_mode: string | null;
+  stripe_key_last4: string | null;
+  webhook_configured: boolean;
+  session_topup_price_cents: number;
+  export_topup_price_cents: number;
+}
+
+export interface AdminStripeTest {
+  ok: boolean;
+  account_name: string | null;
+  mode: string | null;
+  charges_enabled: boolean | null;
+  message: string | null;
+}
+
+export interface PlanPricingUpdateResult {
+  plan: Plan;
+  owners_notified: number;
+  subscriptions_updated: number;
+  subscriptions_failed: number;
 }
 
 export interface ApiErrorBody {
@@ -511,6 +567,8 @@ export interface AdminOrganization {
 export interface AdminOrganizationDetail extends AdminOrganization {
   grace_period_ends_at: string | null;
   subscription_period_ends_at: string | null;
+  session_credits: number;
+  export_credits: number;
   connections_total: number;
   connections_connected: number;
 }

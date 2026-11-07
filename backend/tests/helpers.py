@@ -210,3 +210,38 @@ async def deliver_webhook(
         content=raw_body,
         headers={"Content-Type": "application/json", "X-LetsGive-Signature": signature},
     )
+
+
+async def add_accepted_contribution(
+    db_session: AsyncSession,
+    *,
+    organization_id: str,
+    connection_id: str,
+    received_at: datetime,
+    amount: str = "25.00",
+    sender_name: str = "Jane Donor",
+    message: str = "Tithe",
+) -> None:
+    """An accepted, non-test contribution already recorded for a mailbox --
+    what the live poller leaves behind -- for export tests."""
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.db.models.contribution_event import ContributionDecision, ContributionEvent
+
+    message_id = f"<{uuid4()}@example.org>"
+    db_session.add(
+        ContributionEvent(
+            organization_id=organization_id,
+            mailbox_connection_id=connection_id,
+            provider_message_id=message_id,
+            fingerprint=uuid4().hex,
+            received_at=received_at,
+            decision=ContributionDecision.ACCEPTED,
+            amount=Decimal(amount),
+            currency="CAD",
+            export_details={"sender_name": sender_name, "message": message, "sent_from": "notify@bank.example"},
+            test_mode=False,
+        )
+    )
+    await db_session.commit()

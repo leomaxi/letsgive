@@ -24,6 +24,8 @@ from app.domain.audit import record_audit_event
 from app.domain.billing import assert_can_add_team_member
 from app.domain.rbac import require_roles
 from app.integrations.paypal import PayPalClient, get_paypal_client
+from app.domain.stripe_billing import set_cancel_at_period_end
+from app.integrations.stripe import StripeClient, StripeError, get_stripe_client
 
 router = APIRouter(prefix="/v1/organizations", tags=["organizations"])
 
@@ -291,10 +293,13 @@ async def cancel_subscription(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     paypal: PayPalClient = Depends(get_paypal_client),
+    stripe: StripeClient = Depends(get_stripe_client),
 ) -> Organization:
-    """Cancels immediately; new sessions/connections/templates stop right
-    away, but historical reports stay readable through grace_period_ends_at
-    (spec 13: "a reasonable read-only grace period after cancellation").
+    """Stops the paid subscription from renewing. A Stripe subscription
+    keeps its plan until the end of the period already paid for, then the
+    org moves to the free Starter plan -- it is never locked out. A legacy
+    PayPal subscription is canceled in PayPal right away and the org moves
+    to Starter.
     """
     require_roles(membership, Role.OWNER)
 
@@ -308,7 +313,6 @@ async def cancel_subscription(
             BillingSubscription.organization_id == org.id,
             BillingSubscription.status.in_(
                 [
-                    BillingSubscriptionStatus.APPROVAL_PENDING,
                     BillingSubscriptionStatus.ACTIVE,
                     BillingSubscriptionStatus.PAST_DUE,
                     BillingSubscriptionStatus.SUSPENDED,
@@ -318,15 +322,32 @@ async def cancel_subscription(
         .order_by(BillingSubscription.created_at.desc())
     )
     billing_subscription = result.scalars().first()
-    if billing_subscription is not None:
+    if billing_subscription is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="There's no paid subscription to cancel."
+        )
+
+    if billing_subscription.provider == "stripe":
+        try:
+            await set_cancel_at_period_end(db, subscription=billing_subscription, cancel=True, stripe=stripe)
+        except StripeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        after = {
+            "ends_at": billing_subscription.current_period_end.isoformat()
+            if billing_subscription.current_period_end
+            else None
+        }
+    else:
         await paypal.cancel_subscription(
             billing_subscription.provider_subscription_id, "Canceled by organization owner."
         )
         billing_subscription.status = BillingSubscriptionStatus.CANCELED
         billing_subscription.canceled_at = datetime.now(timezone.utc)
-
-    org.subscription_status = SubscriptionStatus.CANCELED
-    org.grace_period_ends_at = datetime.now(timezone.utc) + timedelta(days=30)
+        starter = (await db.execute(select(Plan).where(Plan.key == "starter"))).scalar_one_or_none()
+        if starter is not None:
+            org.plan_id = starter.id
+        org.subscription_status = SubscriptionStatus.ACTIVE
+        after = {"plan_id": org.plan_id}
 
     await record_audit_event(
         db,
@@ -335,7 +356,7 @@ async def cancel_subscription(
         target_id=org.id,
         organization_id=org.id,
         actor_user_id=current_user.id,
-        after={"grace_period_ends_at": org.grace_period_ends_at.isoformat()},
+        after=after,
         ip_address=request.client.host if request.client else None,
     )
 
@@ -375,6 +396,35 @@ async def switch_plan(
 
     if new_plan.id == org.plan_id:
         return org
+
+    # Paid plans are only ever granted by a completed payment (Stripe) or a
+    # platform admin -- this endpoint used to let any owner switch to any
+    # plan for free by calling the API directly.
+    if new_plan.monthly_price_cents > 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Paid plans are started from the Billing page with a payment.",
+        )
+    live = await db.execute(
+        select(BillingSubscription.id).where(
+            BillingSubscription.organization_id == org.id,
+            BillingSubscription.status.in_(
+                [
+                    BillingSubscriptionStatus.ACTIVE,
+                    BillingSubscriptionStatus.PAST_DUE,
+                    BillingSubscriptionStatus.SUSPENDED,
+                ]
+            ),
+        )
+    )
+    if live.first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You have a paid subscription. Cancel it instead -- you keep your current plan "
+                "until the end of the period you've paid for, then move to the free plan."
+            ),
+        )
 
     previous_plan_id = org.plan_id
     org.plan_id = new_plan.id

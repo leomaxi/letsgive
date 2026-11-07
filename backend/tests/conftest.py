@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 
 import pytest
 import pytest_asyncio
@@ -12,7 +12,7 @@ from app.db.base import Base
 from app.db.models.plan import SEED_PLANS, Plan
 from app.db.session import get_db
 from app.domain.mailbox_providers import get_fake_provider
-from app.domain.notifications import get_notifier
+from app.domain.notifications import get_notifier, set_notifier
 from app.domain.rate_limit import login_ip_rate_limiter
 from app.main import app
 
@@ -34,7 +34,7 @@ class CapturingNotifier:
 
     def latest_code_for(self, session_id: str) -> str:
         for entry in reversed(self.sent):
-            if entry["session_id"] == session_id:
+            if entry.get("session_id") == session_id:
                 return entry["code"]
         raise AssertionError(f"No OTP was sent for session {session_id}")
 
@@ -79,10 +79,15 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-def notifier(db_session: AsyncSession) -> CapturingNotifier:
+def notifier(db_session: AsyncSession) -> Generator[CapturingNotifier, None, None]:
     capturing = CapturingNotifier()
     app.dependency_overrides[get_notifier] = lambda: capturing
-    return capturing
+    # Domain code that isn't a request dependency (e.g. billing notices sent
+    # from app/domain/billing.py) reads the process-wide notifier directly.
+    previous = get_notifier()
+    set_notifier(capturing)
+    yield capturing
+    set_notifier(previous)
 
 
 @pytest_asyncio.fixture

@@ -16,6 +16,7 @@ from app.api.v1 import (
     reconciliation,
     reports,
     sessions,
+    stripe_webhook,
     support,
     webhooks,
 )
@@ -41,3 +42,4 @@ api_router.include_router(support.router)
 api_router.include_router(admin.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(paypal.router)
+api_router.include_router(stripe_webhook.router)

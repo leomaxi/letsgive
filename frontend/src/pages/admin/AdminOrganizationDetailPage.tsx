@@ -26,6 +26,10 @@ export default function AdminOrganizationDetailPage() {
   const [bonusSessions, setBonusSessions] = useState("");
   const [bonusExpiresOn, setBonusExpiresOn] = useState("");
   const [bonusError, setBonusError] = useState<string | null>(null);
+  const [creditSessions, setCreditSessions] = useState("");
+  const [creditExports, setCreditExports] = useState("");
+  const [creditReason, setCreditReason] = useState("");
+  const [creditError, setCreditError] = useState<string | null>(null);
   const [refundReason, setRefundReason] = useState("");
   const [refundMessage, setRefundMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,11 +81,24 @@ export default function AdminOrganizationDetailPage() {
       setBonusError(err instanceof ApiError ? err.message : "Could not grant bonus sessions."),
   });
 
+  const creditsMutation = useMutation({
+    mutationFn: () =>
+      adminApi.grantCredits(orgId!, Number(creditSessions || 0), Number(creditExports || 0), creditReason.trim()),
+    onSuccess: () => {
+      setCreditSessions("");
+      setCreditExports("");
+      setCreditReason("");
+      setCreditError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
+    },
+    onError: (err) => setCreditError(err instanceof ApiError ? err.message : "Could not change credits."),
+  });
+
   const refundMutation = useMutation({
     mutationFn: () => adminApi.processRefund(orgId!, refundReason),
     onSuccess: (refund) => {
       setRefundReason("");
-      setRefundMessage(`Refund ${refund.currency} ${refund.amount} submitted to PayPal.`);
+      setRefundMessage(`Refund ${refund.currency} ${refund.amount} submitted to Stripe.`);
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["admin-organization", orgId] });
     },
@@ -317,10 +334,66 @@ export default function AdminOrganizationDetailPage() {
 
       <Card>
         <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Extra credits
+        </h2>
+        <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
+          {org.session_credits} extra session{org.session_credits === 1 ? "" : "s"} and {org.export_credits} extra
+          export{org.export_credits === 1 ? "" : "s"} on hand. These never expire and are used only after the
+          monthly allowance runs out.
+        </p>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Add credits as a goodwill gesture (or remove them with a negative number). The reason is kept in the audit
+          trail.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Sessions to add" htmlFor="creditSessions">
+            <Input
+              id="creditSessions"
+              type="number"
+              value={creditSessions}
+              onChange={(e) => setCreditSessions(e.target.value)}
+            />
+          </Field>
+          <Field label="Exports to add" htmlFor="creditExports">
+            <Input
+              id="creditExports"
+              type="number"
+              value={creditExports}
+              onChange={(e) => setCreditExports(e.target.value)}
+            />
+          </Field>
+          <Field label="Reason" htmlFor="creditReason">
+            <Input
+              id="creditReason"
+              maxLength={500}
+              value={creditReason}
+              onChange={(e) => setCreditReason(e.target.value)}
+            />
+          </Field>
+        </div>
+        <ErrorText>{creditError}</ErrorText>
+        <div className="mt-3">
+          <Button
+            disabled={
+              (!Number(creditSessions) && !Number(creditExports)) ||
+              !Number.isInteger(Number(creditSessions || 0)) ||
+              !Number.isInteger(Number(creditExports || 0)) ||
+              creditReason.trim().length < 3 ||
+              creditsMutation.isPending
+            }
+            onClick={() => creditsMutation.mutate()}
+          >
+            {creditsMutation.isPending ? "Saving…" : "Update credits"}
+          </Button>
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           Refund
         </h2>
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          Processes a PayPal refund for the unused portion of the latest monthly payment. A reason is
+          Refunds the unused portion of the latest subscription payment through Stripe. A reason is
           required and will be stored in the audit trail.
         </p>
         <Field label="Refund reason" htmlFor="refundReason">

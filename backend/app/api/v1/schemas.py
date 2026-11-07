@@ -10,7 +10,7 @@ from app.db.models.mailbox_connection import ConnectionStatus, MailboxProviderNa
 from app.db.models.membership import MembershipStatus, Role
 from app.db.models.notification import NotificationType
 from app.db.models.organization import SubscriptionStatus
-from app.db.models.billing import BillingInterval
+from app.db.models.billing import BillingInterval, CreditKind
 from app.db.models.reconciliation_item import ReconciliationResolution, ReconciliationStatus
 from app.db.models.session import SessionStatus
 from app.db.models.support_ticket import SupportTicketStatus
@@ -95,6 +95,8 @@ class OrganizationOut(BaseModel):
     discount_percent: int
     bonus_sessions: int
     bonus_sessions_expires_at: datetime | None
+    session_credits: int = 0
+    export_credits: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -123,15 +125,22 @@ class SwitchPlanRequest(BaseModel):
     plan_id: str
 
 
-class StartPayPalSubscriptionRequest(BaseModel):
+class CheckoutRequest(BaseModel):
     plan_id: str
     interval: BillingInterval = BillingInterval.MONTHLY
 
 
-class StartPayPalSubscriptionResponse(BaseModel):
-    billing_subscription_id: str
-    paypal_subscription_id: str
-    approval_url: str
+class CheckoutConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=3, max_length=255)
+
+
+class TopUpRequest(BaseModel):
+    kind: CreditKind
+    quantity: int = Field(ge=1, le=100)
+
+
+class RedirectOut(BaseModel):
+    url: str
 
 
 class BillingSubscriptionOut(BaseModel):
@@ -150,6 +159,8 @@ class BillingSubscriptionOut(BaseModel):
     current_period_start: datetime | None
     current_period_end: datetime | None
     canceled_at: datetime | None
+    cancel_at_period_end: bool = False
+    provider: str = "stripe"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -166,6 +177,9 @@ class BillingPaymentOut(BaseModel):
     status: str
     period_start: datetime | None
     period_end: datetime | None
+    kind: str = "subscription"
+    description: str | None = None
+    receipt_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -216,20 +230,49 @@ class BillingPricingOut(BaseModel):
     quotes: list[PlanPriceQuoteOut]
 
 
+class ContributionExportPreviewOut(BaseModel):
+    row_count: int
+    total_amount: Decimal
+    columns: list[str]
+    sample_rows: list[list[str]]
+    # What the export would be paid with; None = unlimited exports.
+    exports_remaining_included: int | None
+    export_credits: int
+
+
+class UsageOut(BaseModel):
+    sessions_used: int
+    # Plan allowance plus any active admin bonus; None = no limit.
+    sessions_included: int | None
+    session_credits: int
+    exports_used: int
+    # None = unlimited.
+    exports_included: int | None
+    export_credits: int
+    resets_at: datetime
+
+
 class BillingOverviewOut(BaseModel):
     subscription: BillingSubscriptionOut | None
     payments: list[BillingPaymentOut]
     refunds: list[BillingRefundOut]
     refundable_amount: Decimal
     refundable_payment_id: str | None
-    # Set when the active subscription's PayPal pricing no longer matches
-    # current pricing (admin price change, new promotion, annual savings
-    # change); the owner approves it via the revise endpoint.
-    pricing_update: PlanPriceQuoteOut | None = None
+    usage: UsageOut
+    # False until a platform admin has entered the Stripe API key.
+    payments_enabled: bool
+    session_topup_price_cents: int
+    export_topup_price_cents: int
+    # A running promotion the current subscriber can claim with one click.
+    available_promotion: PlanPriceQuoteOut | None = None
 
 
-class RevisePayPalSubscriptionResponse(BaseModel):
-    approval_url: str
+class CheckoutOut(BaseModel):
+    # "redirect": send the browser to url (Stripe Checkout).
+    # "updated": an existing subscription was changed in place.
+    action: str
+    url: str | None = None
+    overview: BillingOverviewOut | None = None
 
 
 class AdminRefundRequest(BaseModel):
@@ -243,6 +286,57 @@ class AdminBonusSessionsRequest(BaseModel):
 
 class AdminPromotionUpdateRequest(BaseModel):
     is_active: bool
+
+
+class AdminCreditGrantRequest(BaseModel):
+    session_credits: int = Field(default=0, ge=-10000, le=10000)
+    export_credits: int = Field(default=0, ge=-10000, le=10000)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class AdminPaymentSettingsUpdateRequest(BaseModel):
+    # Omit to keep the stored value; send "" to remove it.
+    stripe_secret_key: str | None = Field(default=None, max_length=255)
+    stripe_webhook_secret: str | None = Field(default=None, max_length=255)
+    session_topup_price_cents: int | None = Field(default=None, ge=0, le=100000)
+    export_topup_price_cents: int | None = Field(default=None, ge=0, le=100000)
+
+    @field_validator("stripe_secret_key")
+    @classmethod
+    def _secret_key_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if value and not value.startswith(("sk_", "rk_")):
+            raise ValueError("Use the Stripe *secret* key (starts with sk_ or rk_), not the publishable key.")
+        return value
+
+    @field_validator("stripe_webhook_secret")
+    @classmethod
+    def _webhook_secret_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if value and not value.startswith("whsec_"):
+            raise ValueError("The webhook signing secret starts with whsec_.")
+        return value
+
+
+class AdminPaymentSettingsOut(BaseModel):
+    stripe_configured: bool
+    stripe_mode: str | None
+    stripe_key_last4: str | None
+    webhook_configured: bool
+    session_topup_price_cents: int
+    export_topup_price_cents: int
+
+
+class AdminStripeTestOut(BaseModel):
+    ok: bool
+    account_name: str | None = None
+    mode: str | None = None
+    charges_enabled: bool | None = None
+    message: str | None = None
 
 
 class AdminPlanPricingUpdateRequest(BaseModel):
@@ -287,6 +381,17 @@ class AdminAnnualSavingsUpdateRequest(BaseModel):
 
 class BillingSettingsOut(BaseModel):
     annual_savings_percent: int
+    subscriptions_updated: int = 0
+    subscriptions_failed: int = 0
+
+
+class PlanPricingUpdateOut(BaseModel):
+    plan: "PlanOut"
+    owners_notified: int
+    # Existing Stripe subscriptions moved to the new price from their next
+    # renewal, and any that Stripe refused (see the audit log).
+    subscriptions_updated: int
+    subscriptions_failed: int
 
 
 class MemberInviteRequest(BaseModel):
@@ -800,11 +905,13 @@ class AdminOrganizationOut(BaseModel):
 
 class AdminOrganizationDetailOut(AdminOrganizationOut):
     grace_period_ends_at: datetime | None
-    # Latest bonus-session expiry allowed: the PayPal period end, or the
-    # admin-granted plan_expires_at when there is no PayPal subscription.
+    # Latest bonus-session expiry allowed: the paid subscription's period
+    # end, or the admin-granted plan_expires_at when there is none.
     subscription_period_ends_at: datetime | None
     connections_total: int
     connections_connected: int
+    session_credits: int = 0
+    export_credits: int = 0
 
 
 class AdminSubscriptionUpdateRequest(BaseModel):
@@ -850,3 +957,6 @@ class AdminSupportTicketDetailOut(AdminSupportTicketOut):
 
 class SupportTicketStatusUpdateRequest(BaseModel):
     status: SupportTicketStatus
+
+
+PlanPricingUpdateOut.model_rebuild()

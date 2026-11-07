@@ -111,6 +111,17 @@ async def test_mark_notification_read_and_read_all(
     org, owner_token, finance_token, media_token = await _org_with_finance_and_media(
         client, db_session, "notifread"
     )
+    # Starter allows 2 sessions; creating both would also (correctly) send a
+    # "last included session" billing notice. Premium keeps this test about
+    # approval-code notifications only.
+    from sqlalchemy import select as _select
+
+    from app.db.models.organization import Organization as _Org
+    from app.db.models.plan import Plan as _Plan
+
+    org_row = await db_session.get(_Org, org["id"])
+    org_row.plan_id = (await db_session.execute(_select(_Plan).where(_Plan.key == "premium"))).scalar_one().id
+    await db_session.commit()
     session_a = await create_session(client, media_token, org["id"])
     session_b = await create_session(client, media_token, org["id"])
 

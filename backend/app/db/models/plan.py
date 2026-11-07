@@ -83,5 +83,8 @@ class Plan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # checkout for each interval so admins never have to map plans by hand.
     paypal_monthly_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     paypal_yearly_plan_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Stripe product for this plan, created on first checkout. Prices are
+    # always sent inline (price_data) so admin price changes need no syncing.
+    stripe_product_id: Mapped[str | None] = mapped_column(String(64))
     max_exports_per_month: Mapped[int | None] = mapped_column(Integer)
     max_session_mailbox_connections: Mapped[int | None] = mapped_column(Integer, default=1)

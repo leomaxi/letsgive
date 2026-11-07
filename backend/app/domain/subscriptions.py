@@ -2,7 +2,7 @@ from calendar import monthrange
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +25,9 @@ from app.db.models.organization import SubscriptionStatus as OrganizationSubscri
 from app.db.models.plan import Plan
 from app.domain.audit import record_audit_event
 from app.integrations.paypal import PayPalClient
+
+if TYPE_CHECKING:
+    from app.integrations.stripe import StripeClient
 
 
 def price_from_cents(cents: int) -> Decimal:
@@ -176,39 +179,6 @@ async def quote_subscription(
     )
 
 
-async def ensure_paypal_plan_id(
-    db: AsyncSession, *, plan: Plan, interval: BillingInterval, paypal: PayPalClient
-) -> str:
-    """Returns the PayPal billing plan for this plan + interval, creating the
-    PayPal product and plan on first use. Per-subscription pricing is always
-    sent as an override, so the price baked into the PayPal plan only matters
-    as a default and does not need updating when an admin changes prices."""
-    attr = "paypal_yearly_plan_id" if interval == BillingInterval.YEARLY else "paypal_monthly_plan_id"
-    existing = getattr(plan, attr)
-    if existing:
-        return existing
-
-    settings = await get_billing_settings(db)
-    if not settings.paypal_product_id:
-        product = await paypal.create_product(
-            name="Let's Give subscription", request_id=f"letsgive-product-{settings.id}"
-        )
-        settings.paypal_product_id = str(product["id"])
-
-    savings = settings.annual_savings_percent if interval == BillingInterval.YEARLY else 0
-    created = await paypal.create_plan(
-        product_id=settings.paypal_product_id,
-        name=f"Let's Give {plan.name} ({interval.value})",
-        interval=interval.value,
-        price=_cents_to_amount(list_price_cents(plan, interval, savings)),
-        currency="USD",
-        request_id=f"letsgive-plan-{plan.id}-{interval.value}",
-    )
-    setattr(plan, attr, str(created["id"]))
-    await db.flush()
-    return getattr(plan, attr)
-
-
 def prorated_unused_amount(payment: BillingPayment, now: datetime | None = None) -> Decimal:
     if payment.period_start is None or payment.period_end is None:
         return Decimal("0.00")
@@ -236,6 +206,7 @@ async def latest_refundable_payment(
             BillingPayment.organization_id == organization_id,
             BillingPayment.status != BillingPaymentStatus.REFUNDED,
             BillingPayment.provider_capture_id.is_not(None),
+            BillingPayment.kind == "subscription",
         )
         .order_by(BillingPayment.created_at.desc())
     )
@@ -248,15 +219,23 @@ async def create_prorated_refund(
     organization_id: str,
     requested_by_user_id: str,
     reason: str,
-    paypal: PayPalClient,
+    stripe: "StripeClient",
 ) -> BillingRefund:
+    """Refunds the unused part of the latest subscription payment through
+    Stripe. Legacy PayPal payments can't be refunded from here any more."""
+    from app.integrations.stripe import StripeError
+
     reason = reason.strip()
     if not reason:
         raise ValueError("Refund reason is required.")
 
     payment = await latest_refundable_payment(db, organization_id)
     if payment is None or payment.provider_capture_id is None:
-        raise ValueError("No refundable PayPal payment was found for this organization.")
+        raise ValueError("No refundable subscription payment was found for this organization.")
+    if payment.provider != "stripe":
+        raise ValueError(
+            "The latest payment was made through PayPal; refund it from the PayPal dashboard."
+        )
 
     amount = prorated_unused_amount(payment)
     if amount <= 0:
@@ -266,6 +245,7 @@ async def create_prorated_refund(
         organization_id=organization_id,
         billing_payment_id=payment.id,
         requested_by_user_id=requested_by_user_id,
+        provider="stripe",
         amount=amount,
         currency=payment.currency,
         reason=reason,
@@ -274,18 +254,20 @@ async def create_prorated_refund(
     db.add(refund)
     await db.flush()
 
-    response = await paypal.refund_capture(
-        capture_id=payment.provider_capture_id,
-        amount=amount,
-        currency=payment.currency,
-        note=reason,
-        request_id=f"refund-{refund.id}",
-    )
+    try:
+        response = await stripe.create_refund(
+            payment_intent=payment.provider_capture_id,
+            amount_cents=int((amount * 100).to_integral_value()),
+            metadata={"organization_id": organization_id, "reason": reason[:450]},
+            idempotency_key=f"refund-{refund.id}",
+        )
+    except StripeError as exc:
+        raise ValueError(f"Stripe refused the refund: {exc.message}") from exc
     refund.provider_refund_id = response.get("id")
     refund.status = (
-        BillingRefundStatus.COMPLETED
-        if response.get("status") in {None, "COMPLETED", "PENDING"}
-        else BillingRefundStatus.FAILED
+        BillingRefundStatus.FAILED
+        if response.get("status") in {"failed", "canceled"}
+        else BillingRefundStatus.COMPLETED
     )
     refund.processed_at = utcnow()
     payment.status = (

@@ -7,6 +7,7 @@ from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, Text, Unique
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UTCDateTime, UUIDPrimaryKeyMixin
+from app.domain.crypto import EncryptedString
 
 
 class BillingSubscriptionStatus(str, enum.Enum):
@@ -68,6 +69,9 @@ class BillingSubscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     current_period_start: Mapped[datetime | None] = mapped_column(UTCDateTime)
     current_period_end: Mapped[datetime | None] = mapped_column(UTCDateTime)
     canceled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Stripe: the owner stopped auto-renew; the plan stays until
+    # current_period_end, then the org drops to the free Starter plan.
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class BillingPayment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -95,6 +99,11 @@ class BillingPayment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     period_start: Mapped[datetime | None] = mapped_column(UTCDateTime)
     period_end: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # What the payment was for: "subscription", "session_credits",
+    # "export_credits". Receipt link is Stripe's hosted invoice/receipt page.
+    kind: Mapped[str] = mapped_column(String(30), nullable=False, default="subscription")
+    description: Mapped[str | None] = mapped_column(String(255))
+    receipt_url: Mapped[str | None] = mapped_column(String(1000))
 
     __table_args__ = (UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_id"),)
 
@@ -148,3 +157,38 @@ class BillingSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     key: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
     annual_savings_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
     paypal_product_id: Mapped[str | None] = mapped_column(String(64))
+    # Stripe credentials, entered by a platform admin in the admin panel and
+    # encrypted at rest. Never returned by any API in full.
+    stripe_secret_key: Mapped[str | None] = mapped_column(EncryptedString(512))
+    stripe_webhook_secret: Mapped[str | None] = mapped_column(EncryptedString(512))
+    # Price of one extra session / export bought as a top-up (never expire).
+    session_topup_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    export_topup_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+
+
+class CreditKind(str, enum.Enum):
+    SESSIONS = "sessions"
+    EXPORTS = "exports"
+
+
+class CreditPurchase(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A one-off top-up of extra sessions or exports. Credits are added to
+    the organization only once Stripe reports the checkout paid, and the
+    unique checkout id makes granting idempotent across the webhook and the
+    owner's return from checkout."""
+
+    __tablename__ = "credit_purchases"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    purchased_by_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    provider: Mapped[str] = mapped_column(String(30), nullable=False, default="stripe")
+    provider_checkout_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # "pending" until paid, then "completed" (credits granted).
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

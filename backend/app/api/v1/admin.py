@@ -13,6 +13,11 @@ from app.api.v1.schemas import (
     AdminPlanPricingUpdateRequest,
     AdminPromotionCreateRequest,
     AdminPromotionUpdateRequest,
+    AdminCreditGrantRequest,
+    AdminPaymentSettingsOut,
+    AdminPaymentSettingsUpdateRequest,
+    AdminStripeTestOut,
+    PlanPricingUpdateOut,
     AdminRefundRequest,
     AdminSubscriptionUpdateRequest,
     AdminSupportTicketDetailOut,
@@ -28,7 +33,7 @@ from app.api.v1.schemas import (
     SupportTicketStatusUpdateRequest,
 )
 from app.db.models.audit_log import AuditLog
-from app.db.models.billing import BillingPromotion, BillingSubscription
+from app.db.models.billing import BillingInterval, BillingPromotion, BillingSubscription
 from app.db.models.mailbox_connection import ConnectionStatus, MailboxConnection
 from app.db.models.membership import Membership, MembershipStatus, Role
 from app.db.models.notification import NotificationType
@@ -43,7 +48,8 @@ from app.domain.inbox import notify_user
 from app.domain.notifications import Notifier, get_notifier
 from app.domain.subscriptions import create_prorated_refund
 from app.domain.subscriptions import get_billing_settings as load_billing_settings
-from app.integrations.paypal import PayPalClient, get_paypal_client
+from app.domain.stripe_billing import reprice_subscriptions
+from app.integrations.stripe import StripeClient, StripeError, get_stripe_client, key_mode
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -78,8 +84,8 @@ async def _notify_owners_on_plan_price_change(
             f"The monthly subscription price for {plan.name} changed from "
             f"USD {old_price:.2f} to USD {new_price:.2f}. Yearly billing keeps its "
             f"annual discount on top of the new price.\n\nReason: {reason}\n\n"
-            "If you pay through PayPal, your current price stays in place until you "
-            "approve the new pricing from the Billing page in Let's Give."
+            "If you have a paid subscription, the new price applies from your next "
+            "renewal; nothing changes before then."
         )
         await notify_user(
             db,
@@ -216,6 +222,8 @@ async def get_organization(
         subscription_period_ends_at=await _subscription_period_end(db, org),
         connections_total=connections_total_result.scalar_one(),
         connections_connected=connections_connected_result.scalar_one(),
+        session_credits=org.session_credits,
+        export_credits=org.export_credits,
     )
 
 
@@ -334,7 +342,7 @@ async def grant_bonus_sessions(
     return await get_organization(organization_id, admin=admin, db=db)
 
 
-@router.post("/plans/{plan_id}/pricing", response_model=PlanOut)
+@router.post("/plans/{plan_id}/pricing", response_model=PlanPricingUpdateOut)
 async def update_plan_pricing(
     plan_id: str,
     payload: AdminPlanPricingUpdateRequest,
@@ -342,7 +350,8 @@ async def update_plan_pricing(
     admin: User = Depends(get_platform_admin),
     db: AsyncSession = Depends(get_db),
     notifier: Notifier = Depends(get_notifier),
-) -> Plan:
+    stripe: StripeClient = Depends(get_stripe_client),
+) -> PlanPricingUpdateOut:
     plan = await db.get(Plan, plan_id)
     if plan is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found.")
@@ -356,6 +365,10 @@ async def update_plan_pricing(
         reason=payload.reason,
         notifier=notifier,
     )
+    updated = failed = 0
+    if stripe.is_configured:
+        # Existing subscribers move to the new price from their next renewal.
+        updated, failed = await reprice_subscriptions(db, stripe, plan_id=plan.id)
     await record_audit_event(
         db,
         action="platform_admin.plan_price_changed",
@@ -367,12 +380,19 @@ async def update_plan_pricing(
             "monthly_price_cents": plan.monthly_price_cents,
             "reason": payload.reason,
             "owners_notified": notified,
+            "subscriptions_updated": updated,
+            "subscriptions_failed": failed,
         },
         ip_address=_client_ip(request),
     )
     await db.commit()
     await db.refresh(plan)
-    return plan
+    return PlanPricingUpdateOut(
+        plan=PlanOut.model_validate(plan),
+        owners_notified=notified,
+        subscriptions_updated=updated,
+        subscriptions_failed=failed,
+    )
 
 
 @router.get("/promotions", response_model=list[BillingPromotionOut])
@@ -454,10 +474,14 @@ async def update_billing_settings(
     request: Request,
     admin: User = Depends(get_platform_admin),
     db: AsyncSession = Depends(get_db),
+    stripe: StripeClient = Depends(get_stripe_client),
 ) -> BillingSettingsOut:
     settings = await load_billing_settings(db)
     before = settings.annual_savings_percent
     settings.annual_savings_percent = payload.annual_savings_percent
+    updated = failed = 0
+    if stripe.is_configured and before != settings.annual_savings_percent:
+        updated, failed = await reprice_subscriptions(db, stripe, interval=BillingInterval.YEARLY)
     await record_audit_event(
         db,
         action="platform_admin.annual_savings_changed",
@@ -465,11 +489,135 @@ async def update_billing_settings(
         target_id=settings.id,
         actor_user_id=admin.id,
         before={"annual_savings_percent": before},
-        after={"annual_savings_percent": settings.annual_savings_percent},
+        after={
+            "annual_savings_percent": settings.annual_savings_percent,
+            "subscriptions_updated": updated,
+            "subscriptions_failed": failed,
+        },
         ip_address=_client_ip(request),
     )
     await db.commit()
-    return BillingSettingsOut(annual_savings_percent=settings.annual_savings_percent)
+    return BillingSettingsOut(
+        annual_savings_percent=settings.annual_savings_percent,
+        subscriptions_updated=updated,
+        subscriptions_failed=failed,
+    )
+
+
+def _payment_settings_out(settings) -> AdminPaymentSettingsOut:
+    key = settings.stripe_secret_key
+    return AdminPaymentSettingsOut(
+        stripe_configured=bool(key),
+        stripe_mode=key_mode(key),
+        stripe_key_last4=key[-4:] if key else None,
+        webhook_configured=bool(settings.stripe_webhook_secret),
+        session_topup_price_cents=settings.session_topup_price_cents,
+        export_topup_price_cents=settings.export_topup_price_cents,
+    )
+
+
+@router.get("/payment-settings", response_model=AdminPaymentSettingsOut)
+async def get_payment_settings(
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminPaymentSettingsOut:
+    settings = await load_billing_settings(db)
+    await db.commit()
+    return _payment_settings_out(settings)
+
+
+@router.post("/payment-settings", response_model=AdminPaymentSettingsOut)
+async def update_payment_settings(
+    payload: AdminPaymentSettingsUpdateRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminPaymentSettingsOut:
+    """Stores the Stripe secret key / webhook secret (encrypted at rest) and
+    top-up prices. Secrets are write-only: responses only say whether one is
+    set, its mode and last four characters."""
+    settings = await load_billing_settings(db)
+    before = _payment_settings_out(settings).model_dump()
+    if payload.stripe_secret_key is not None:
+        settings.stripe_secret_key = payload.stripe_secret_key or None
+    if payload.stripe_webhook_secret is not None:
+        settings.stripe_webhook_secret = payload.stripe_webhook_secret or None
+    if payload.session_topup_price_cents is not None:
+        settings.session_topup_price_cents = payload.session_topup_price_cents
+    if payload.export_topup_price_cents is not None:
+        settings.export_topup_price_cents = payload.export_topup_price_cents
+    after = _payment_settings_out(settings)
+    await record_audit_event(
+        db,
+        action="platform_admin.payment_settings_changed",
+        target_type="billing_settings",
+        target_id=settings.id,
+        actor_user_id=admin.id,
+        before=before,
+        after=after.model_dump(),
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    return after
+
+
+@router.post("/payment-settings/test", response_model=AdminStripeTestOut)
+async def test_stripe_connection(
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+    stripe: StripeClient = Depends(get_stripe_client),
+) -> AdminStripeTestOut:
+    if not stripe.is_configured:
+        return AdminStripeTestOut(ok=False, message="No Stripe secret key saved yet.")
+    try:
+        account = await stripe.retrieve_account()
+    except StripeError as exc:
+        return AdminStripeTestOut(ok=False, message=exc.message)
+    profile = account.get("business_profile") or {}
+    settings = account.get("settings") or {}
+    return AdminStripeTestOut(
+        ok=True,
+        account_name=profile.get("name") or (settings.get("dashboard") or {}).get("display_name") or account.get("email"),
+        mode=key_mode(stripe.secret_key),
+        charges_enabled=account.get("charges_enabled"),
+    )
+
+
+@router.post("/organizations/{organization_id}/credits", response_model=AdminOrganizationDetailOut)
+async def grant_credits(
+    organization_id: str,
+    payload: AdminCreditGrantRequest,
+    request: Request,
+    admin: User = Depends(get_platform_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminOrganizationDetailOut:
+    """Adds (or, with a negative number, removes) never-expiring session or
+    export credits -- e.g. a goodwill gesture after a support ticket."""
+    org = await db.get(Organization, organization_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+    if payload.session_credits == 0 and payload.export_credits == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nothing to change.")
+    before = {"session_credits": org.session_credits, "export_credits": org.export_credits}
+    org.session_credits = max(org.session_credits + payload.session_credits, 0)
+    org.export_credits = max(org.export_credits + payload.export_credits, 0)
+    await record_audit_event(
+        db,
+        action="platform_admin.credits_changed",
+        target_type="organization",
+        target_id=org.id,
+        organization_id=org.id,
+        actor_user_id=admin.id,
+        before=before,
+        after={
+            "session_credits": org.session_credits,
+            "export_credits": org.export_credits,
+            "reason": payload.reason,
+        },
+        ip_address=_client_ip(request),
+    )
+    await db.commit()
+    return await get_organization(organization_id, admin=admin, db=db)
 
 
 @router.post("/organizations/{organization_id}/refund", response_model=BillingRefundOut)
@@ -479,7 +627,7 @@ async def process_refund(
     request: Request,
     admin: User = Depends(get_platform_admin),
     db: AsyncSession = Depends(get_db),
-    paypal: PayPalClient = Depends(get_paypal_client),
+    stripe: StripeClient = Depends(get_stripe_client),
 ) -> BillingRefundOut:
     org = await db.get(Organization, organization_id)
     if org is None:
@@ -491,7 +639,7 @@ async def process_refund(
             organization_id=organization_id,
             requested_by_user_id=admin.id,
             reason=payload.reason,
-            paypal=paypal,
+            stripe=stripe,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -507,7 +655,7 @@ async def process_refund(
             "amount": str(refund.amount),
             "currency": refund.currency,
             "reason": refund.reason,
-            "paypal_refund_id": refund.provider_refund_id,
+            "provider_refund_id": refund.provider_refund_id,
         },
         ip_address=_client_ip(request),
     )

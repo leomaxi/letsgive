@@ -426,10 +426,15 @@ async def test_imap_export_reads_mailbox_date_range_without_sessions(
     def uid_side_effect(command, *args):
         if command == "search":
             return ("OK", [b"1 2"])
-        uid = args[0]
-        return ("OK", [(b"BODY", mailbox_messages[uid if isinstance(uid, bytes) else uid.encode()]), b")"])
+        uids = args[0] if isinstance(args[0], str) else args[0].decode()
+        parts: list = []
+        for uid in uids.split(","):
+            parts.append((f"{uid} (UID {uid} BODY[] {{1}}".encode(), mailbox_messages[uid.encode()]))
+            parts.append(b")")
+        return ("OK", parts)
 
     export_mock.uid.side_effect = uid_side_effect
+    export_mock.select.return_value = ("OK", [b"2"])
     with patch("app.domain.imap_polling.imaplib.IMAP4_SSL", return_value=export_mock):
         resp = await client.get(
             f"/v1/organizations/{org['id']}/contribution-export.csv",

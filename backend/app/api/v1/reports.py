@@ -1,6 +1,7 @@
 import csv
 import io
 from datetime import datetime, timezone, tzinfo
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user, get_membership, get_session_membership
 from app.api.v1.schemas import (
+    ContributionExportPreviewOut,
     ContributionExportFieldOut,
     ContributionExportTemplateCreateRequest,
     ContributionExportTemplateOut,
@@ -26,9 +28,10 @@ from app.db.models.parser_profile import ParserProfile
 from app.db.models.reconciliation_item import ReconciliationItem, ReconciliationStatus
 from app.db.models.session import Session
 from app.db.session import get_db
-from app.domain.billing import assert_reports_readable, consume_export_quota
+from app.domain.billing import assert_can_export, assert_reports_readable, consume_export_quota, usage_summary
 from app.domain.audit import record_audit_event
 from app.domain.imap_polling import (
+    ExportSourceError,
     fetch_imap_message_by_message_id,
     fetch_imap_messages_between,
     get_recent_messages,
@@ -115,15 +118,6 @@ def _keyword_list(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [part.strip().lower() for part in raw.split(",") if part.strip()]
-
-
-def _matches_keywords(event: ContributionEvent, keywords: list[str]) -> bool:
-    if not keywords:
-        return True
-    details: dict[str, Any] = event.export_details or {}
-    haystack = " ".join(str(details.get(key) or "") for key in ("message", "sent_from", "sender_name"))
-    haystack = haystack.lower()
-    return any(keyword in haystack for keyword in keywords)
 
 
 def _row_matches_keywords(row: dict[str, Any], keywords: list[str]) -> bool:
@@ -522,6 +516,161 @@ async def sample_export_fields(
     ]
 
 
+def _event_row(event: ContributionEvent) -> dict[str, Any]:
+    return {
+        **(event.export_details or {}),
+        "received_at": event.received_at,
+        "amount": event.amount,
+        "currency": event.currency,
+        "provider_message_id": event.provider_message_id,
+    }
+
+
+async def _collect_export_rows(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    connection: MailboxConnection,
+    from_datetime: datetime,
+    to_datetime: datetime,
+    keyword_terms: list[str],
+) -> list[dict[str, Any]]:
+    """Every accepted, non-test transaction for this mailbox in the range.
+
+    Contributions this app already recorded (live sessions, polling) always
+    count, so a slow or briefly unreachable mailbox can no longer turn a
+    real export into an empty file. For IMAP mailboxes the mailbox itself is
+    also re-read, to include transactions that arrived outside any session;
+    the two sources are merged by message id. A mailbox read failure raises
+    ExportSourceError rather than silently looking like "no transactions".
+    """
+    result = await db.execute(
+        select(ContributionEvent)
+        .where(
+            ContributionEvent.organization_id == organization_id,
+            ContributionEvent.mailbox_connection_id == connection.id,
+            ContributionEvent.decision == ContributionDecision.ACCEPTED,
+            ContributionEvent.test_mode.is_(False),
+            ContributionEvent.received_at >= from_datetime,
+            ContributionEvent.received_at <= to_datetime,
+        )
+        .order_by(ContributionEvent.received_at)
+    )
+    events = list(result.scalars().all())
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    if connection.provider == MailboxProviderName.IMAP:
+        for row in await _email_export_rows(db, connection, from_datetime, to_datetime):
+            rows_by_id[row["provider_message_id"]] = row
+    else:
+        await _hydrate_missing_export_details(db, connection, events)
+    for event in events:
+        # Prefer the freshly parsed mailbox copy (richer details) when both exist.
+        rows_by_id.setdefault(event.provider_message_id, _event_row(event))
+
+    def _sort_key(row: dict[str, Any]) -> datetime:
+        value = row["received_at"]
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    rows = [row for row in rows_by_id.values() if _row_matches_keywords(row, keyword_terms)]
+    rows.sort(key=_sort_key)
+    return rows
+
+
+async def _export_context(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    connection_id: str,
+    from_datetime: datetime,
+    to_datetime: datetime,
+    template_id: str | None,
+) -> tuple[Organization, MailboxConnection, list[str], dict[str, str]]:
+    if from_datetime > to_datetime:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="From date must be before to date.")
+    connection = await db.get(MailboxConnection, connection_id)
+    if connection is None or connection.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
+    if connection.status.value != "connected":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select a connected mailbox.")
+    org = await db.get(Organization, organization_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+
+    field_keys = DEFAULT_EXPORT_FIELDS
+    field_labels = {key: FIELD_LABELS[key] for key in field_keys}
+    if template_id:
+        template = await db.get(ContributionExportTemplate, template_id)
+        if template is None or template.organization_id != organization_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export template not found.")
+        field_keys = template.field_keys
+        field_labels = template.field_labels
+    return org, connection, field_keys, field_labels
+
+
+MAILBOX_UNREACHABLE_DETAIL = (
+    "Couldn't read the mailbox just now, so the export was stopped. No export was used -- "
+    "please try again in a minute."
+)
+
+
+@org_reports_router.get("/preview", response_model=ContributionExportPreviewOut)
+async def preview_contribution_export(
+    organization_id: str,
+    connection_id: str = Query(...),
+    from_datetime: datetime = Query(...),
+    to_datetime: datetime = Query(...),
+    keywords: str | None = None,
+    template_id: str | None = None,
+    membership: Membership = Depends(get_membership),
+    db: AsyncSession = Depends(get_db),
+) -> ContributionExportPreviewOut:
+    """How many rows an export would contain, plus the first few -- free,
+    so nobody spends an export to find out a range is empty."""
+    require_roles(membership, Role.OWNER, Role.FINANCE)
+    org, connection, field_keys, field_labels = await _export_context(
+        db,
+        organization_id=organization_id,
+        connection_id=connection_id,
+        from_datetime=from_datetime,
+        to_datetime=to_datetime,
+        template_id=template_id,
+    )
+    export_tz = _export_timezone(org.timezone)
+    try:
+        rows = await _collect_export_rows(
+            db,
+            organization_id=organization_id,
+            connection=connection,
+            from_datetime=from_datetime,
+            to_datetime=to_datetime,
+            keyword_terms=_keyword_list(keywords),
+        )
+    except ExportSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=MAILBOX_UNREACHABLE_DETAIL) from exc
+    total = Decimal("0")
+    for row in rows:
+        try:
+            total += Decimal(str(row.get("amount") or 0))
+        except (ArithmeticError, ValueError):
+            pass
+    usage = await usage_summary(db, org)
+    remaining_included = (
+        None
+        if usage.exports_included is None
+        else max(usage.exports_included - usage.exports_used, 0)
+    )
+    return ContributionExportPreviewOut(
+        row_count=len(rows),
+        total_amount=total,
+        columns=[field_labels.get(key, FIELD_LABELS.get(key, key)) for key in field_keys],
+        sample_rows=[
+            [_row_export_value(row, key, export_tz) for key in field_keys] for row in rows[:5]
+        ],
+        exports_remaining_included=remaining_included,
+        export_credits=usage.export_credits,
+    )
+
+
 @org_reports_router.get(".csv")
 async def export_contributions_csv(
     organization_id: str,
@@ -534,65 +683,61 @@ async def export_contributions_csv(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     require_roles(membership, Role.OWNER, Role.FINANCE)
-    if from_datetime > to_datetime:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="From date must be before to date.")
-    connection = await db.get(MailboxConnection, connection_id)
-    if connection is None or connection.organization_id != organization_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
-    if connection.status.value != "connected":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select a connected mailbox.")
-
-    org = await db.get(Organization, organization_id)
-    if org is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found.")
+    org, connection, field_keys, field_labels = await _export_context(
+        db,
+        organization_id=organization_id,
+        connection_id=connection_id,
+        from_datetime=from_datetime,
+        to_datetime=to_datetime,
+        template_id=template_id,
+    )
     export_tz = _export_timezone(org.timezone)
+    # Fail fast before the slow mailbox read if nothing is left to spend.
+    await assert_can_export(db, org)
 
-    field_keys = DEFAULT_EXPORT_FIELDS
-    field_labels = {key: FIELD_LABELS[key] for key in field_keys}
-    if template_id:
-        template = await db.get(ContributionExportTemplate, template_id)
-        if template is None or template.organization_id != organization_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export template not found.")
-        field_keys = template.field_keys
-        field_labels = template.field_labels
+    try:
+        rows = await _collect_export_rows(
+            db,
+            organization_id=organization_id,
+            connection=connection,
+            from_datetime=from_datetime,
+            to_datetime=to_datetime,
+            keyword_terms=_keyword_list(keywords),
+        )
+    except ExportSourceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=MAILBOX_UNREACHABLE_DETAIL) from exc
+    if not rows:
+        # An empty export never costs anything.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "No matching transactions in that date range, so nothing was exported and no "
+                "export was used. Try a wider range or fewer keywords."
+            ),
+        )
 
-    keyword_terms = _keyword_list(keywords)
-    await consume_export_quota(db, org)
-
+    used = await consume_export_quota(db, org)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow([field_labels.get(key, FIELD_LABELS.get(key, key)) for key in field_keys])
-    if connection.provider == MailboxProviderName.IMAP:
-        rows = [
-            row
-            for row in await _email_export_rows(db, connection, from_datetime, to_datetime)
-            if _row_matches_keywords(row, keyword_terms)
-        ]
-        for row in rows:
-            writer.writerow([_row_export_value(row, key, export_tz) for key in field_keys])
-    else:
-        result = await db.execute(
-            select(ContributionEvent)
-            .where(
-                ContributionEvent.organization_id == organization_id,
-                ContributionEvent.mailbox_connection_id == connection_id,
-                ContributionEvent.decision == ContributionDecision.ACCEPTED,
-                ContributionEvent.test_mode.is_(False),
-                ContributionEvent.received_at >= from_datetime,
-                ContributionEvent.received_at <= to_datetime,
-            )
-            .order_by(ContributionEvent.received_at)
-        )
-        all_events = list(result.scalars().all())
-        await _hydrate_missing_export_details(db, connection, all_events)
-        events = [event for event in all_events if _matches_keywords(event, keyword_terms)]
-        for event in events:
-            writer.writerow([_event_export_value(event, key, export_tz) for key in field_keys])
-    buffer.seek(0)
+    for row in rows:
+        writer.writerow([_row_export_value(row, key, export_tz) for key in field_keys])
+    await record_audit_event(
+        db,
+        action="contribution_export.downloaded",
+        target_type="mailbox_connection",
+        target_id=connection.id,
+        organization_id=organization_id,
+        actor_user_id=membership.user_id,
+        after={"rows": len(rows), "paid_with": used},
+    )
     await db.commit()
 
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="contribution-export.csv"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="contribution-export.csv"',
+            "X-Export-Rows": str(len(rows)),
+        },
     )
