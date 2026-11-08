@@ -3,7 +3,10 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import uuid
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.api.display_page import router as display_page_router
 from app.api.v1.router import api_router
@@ -15,6 +18,34 @@ from app.domain.subscriptions import revert_expired_plans
 
 logger = logging.getLogger("letsgive.imap")
 subscriptions_logger = logging.getLogger("letsgive.subscriptions")
+error_logger = logging.getLogger("letsgive.errors")
+if not error_logger.handlers:
+    # uvicorn doesn't attach handlers to app loggers (see notifications.py).
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+    error_logger.addHandler(_handler)
+    error_logger.setLevel(logging.INFO)
+
+
+async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """Any error no endpoint handled: log the full traceback under a short
+    reference and give the user a readable message carrying that same
+    reference, instead of a bare "Internal Server Error" (which the
+    frontend can only show as "Request failed (500)"). Support can then
+    find the exact failure with: journalctl -u letsgive-backend | grep <ref>
+    """
+    ref = uuid.uuid4().hex[:8].upper()
+    error_logger.exception("Unhandled error ref=%s %s %s", ref, request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": (
+                f"Something went wrong on our side (reference {ref}). Please try again; "
+                "if it keeps happening, send this reference to support."
+            ),
+            "error_reference": ref,
+        },
+    )
 
 
 async def _imap_poll_loop() -> None:
@@ -89,6 +120,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         debug=settings.env == "development",
     )
+    app.add_exception_handler(Exception, _unexpected_error)
     app.include_router(api_router)
     app.include_router(display_page_router)
 

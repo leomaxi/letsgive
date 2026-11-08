@@ -60,9 +60,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const data = isJson ? await response.json() : undefined;
 
   if (!response.ok) {
-    const message = isJson
-      ? extractDetail(data as ApiErrorBody, `Request failed (${response.status})`)
-      : `Request failed (${response.status})`;
+    const fallback =
+      response.status >= 500
+        ? `Something went wrong on our side (error ${response.status}). Please try again in a moment; if it keeps happening, contact support.`
+        : `Request failed (${response.status})`;
+    const message = isJson ? extractDetail(data as ApiErrorBody, fallback) : fallback;
     throw new ApiError(response.status, message);
   }
 

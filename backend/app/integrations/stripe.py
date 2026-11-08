@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import Depends, HTTPException, status
@@ -68,8 +69,10 @@ def key_mode(secret_key: str | None) -> str | None:
 
 
 class StripeClient:
-    def __init__(self, secret_key: str | None) -> None:
+    def __init__(self, secret_key: str | None, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.secret_key = secret_key or None
+        # Injectable so tests can exercise the real request encoding.
+        self._transport = transport
 
     @property
     def is_configured(self) -> bool:
@@ -95,18 +98,32 @@ class StripeClient:
         }
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        body_bytes: bytes | None = None
+        if data:
+            # Encode the form ourselves: httpx only takes a dict for data=,
+            # and given the (key, value) pair list Stripe's nested keys need
+            # it treats it as a raw stream and crashes (RuntimeError) --
+            # which made every Stripe write a 500 in production.
+            body_bytes = urlencode(_flatten(data)).encode()
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 response = await client.request(
                     method,
                     f"{STRIPE_API_BASE}{path}",
-                    data=_flatten(data) if data else None,
+                    content=body_bytes,
                     params=params,
                     headers=headers,
                 )
         except httpx.HTTPError as exc:
             raise StripeError("Couldn't reach Stripe. Please try again in a moment.") from exc
-        body: dict[str, Any] = response.json() if response.content else {}
+        try:
+            body: dict[str, Any] = response.json() if response.content else {}
+        except ValueError as exc:
+            # e.g. an HTML error page from Stripe's edge during an outage.
+            raise StripeError(
+                f"Stripe sent an unreadable reply ({response.status_code}). Please try again in a moment."
+            ) from exc
         if response.status_code >= 400:
             error = body.get("error") or {}
             message = error.get("message") or f"Stripe request failed ({response.status_code})."

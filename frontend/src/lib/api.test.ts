@@ -98,7 +98,10 @@ describe("apiRequest", () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse(500, {}));
 
     await expect(apiRequest("/v1/thing")).rejects.toMatchObject(
-      new ApiError(500, "Request failed (500)")
+      new ApiError(
+        500,
+        "Something went wrong on our side (error 500). Please try again in a moment; if it keeps happening, contact support."
+      )
     );
   });
 
@@ -106,7 +109,10 @@ describe("apiRequest", () => {
     vi.mocked(fetch).mockResolvedValue(new Response("oops", { status: 502 }));
 
     await expect(apiRequest("/v1/thing")).rejects.toMatchObject(
-      new ApiError(502, "Request failed (502)")
+      new ApiError(
+        502,
+        "Something went wrong on our side (error 502). Please try again in a moment; if it keeps happening, contact support."
+      )
     );
   });
 });

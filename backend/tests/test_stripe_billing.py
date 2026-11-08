@@ -905,3 +905,107 @@ async def test_admin_can_grant_credits(client: AsyncClient, db_session: AsyncSes
     assert resp.status_code == 200, resp.text
     assert resp.json()["session_credits"] == 3
     assert resp.json()["export_credits"] == 2
+
+
+async def test_unexpected_error_returns_readable_message_with_reference(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A crash must reach the user as a readable message with a reference
+    support can grep for, not a bare "Request failed (500)"."""
+    from httpx import ASGITransport
+
+    _, org, headers = await _owner_org(client, "crash")
+    growth = await _plan(db_session, "growth")
+
+    class ExplodingStripe(FakeStripe):
+        async def create_checkout_session(self, params, *, idempotency_key):
+            raise RuntimeError("boom")
+
+    from app.main import create_app
+
+    # Production runs with debug off (LETSGIVE_ENV=production); in debug mode
+    # Starlette shows its own traceback page instead of the handler.
+    prod_app = create_app()
+    prod_app.debug = False
+    prod_app.dependency_overrides = app.dependency_overrides
+    app.dependency_overrides[get_stripe_client] = lambda: ExplodingStripe()
+    try:
+        transport = ASGITransport(app=prod_app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as raw_client:
+            resp = await raw_client.post(
+                f"/v1/organizations/{org['id']}/billing/checkout", json={"plan_id": growth.id}, headers=headers
+            )
+    finally:
+        stop_fake_stripe()
+    assert resp.status_code == 500
+    body = resp.json()
+    assert len(body["error_reference"]) == 8
+    assert body["error_reference"] in body["detail"]
+    assert "Something went wrong on our side" in body["detail"]
+
+
+async def test_unreadable_stripe_reply_is_a_clean_error():
+    from unittest.mock import AsyncMock, patch
+
+    import httpx
+    import pytest
+
+    from app.integrations.stripe import StripeClient
+
+    html = httpx.Response(502, content=b"<html>Bad gateway</html>", headers={"content-type": "text/html"})
+    with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=html)):
+        with pytest.raises(StripeError) as caught:
+            await StripeClient("sk_test_x").retrieve_account()
+    assert "unreadable reply" in caught.value.message
+
+
+async def test_topup_through_the_real_stripe_client_encodes_the_form(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Regression: the real client used to pass the form to httpx as a list
+    of pairs, which httpx 0.28 treats as a raw stream and crashes on -- every
+    Stripe write was a 500 in production while the fake client hid it. This
+    runs the actual StripeClient against a mock transport."""
+    from urllib.parse import parse_qsl
+
+    import httpx
+
+    from app.integrations.stripe import StripeClient
+
+    _, org, headers = await _owner_org(client, "realclient")
+    sent: list[tuple[str, str, dict[str, str], dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = dict(parse_qsl(request.content.decode()))
+        sent.append((request.method, request.url.path, dict(request.headers), form))
+        if request.url.path == "/v1/customers":
+            return httpx.Response(200, json={"id": "cus_real"})
+        if request.url.path == "/v1/checkout/sessions":
+            return httpx.Response(200, json={"id": "cs_real", "url": "https://checkout.stripe.com/c/cs_real"})
+        return httpx.Response(404, json={"error": {"message": "unexpected"}})
+
+    real = StripeClient("sk_test_real", transport=httpx.MockTransport(handler))
+    app.dependency_overrides[get_stripe_client] = lambda: real
+    try:
+        resp = await client.post(
+            f"/v1/organizations/{org['id']}/billing/topups",
+            json={"kind": "exports", "quantity": 3},
+            headers=headers,
+        )
+    finally:
+        stop_fake_stripe()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"] == "https://checkout.stripe.com/c/cs_real"
+    method, path, request_headers, form = sent[-1]
+    assert (method, path) == ("POST", "/v1/checkout/sessions")
+    assert request_headers["content-type"] == "application/x-www-form-urlencoded"
+    assert request_headers["authorization"] == "Bearer sk_test_real"
+    assert request_headers["stripe-version"] == "2024-06-20"
+    assert form["mode"] == "payment"
+    assert form["customer"] == "cus_real"
+    assert form["line_items[0][price_data][unit_amount]"] == "100"
+    assert form["line_items[0][quantity]"] == "3"
+    assert form["metadata[credit_kind]"] == "exports"
+    assert form["invoice_creation[enabled]"] == "true"
+    assert form["success_url"].endswith("/billing?topup=success&session_id={CHECKOUT_SESSION_ID}")
